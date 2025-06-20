@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/mattermost/mattermost-server/v6/model"
@@ -68,18 +69,30 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	
 	var post model.Post
 	if err := json.Unmarshal([]byte(postData), &post); err != nil {
-		log.Printf("Failed to parse post: %v", err)
+		log.Printf("[%s] ERROR: Failed to parse post: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 		return
 	}
+	
+	// Log all incoming messages
+	log.Printf("[%s] INCOMING: User %s in channel %s: %s", 
+		time.Now().Format("2006-01-02 15:04:05"), 
+		post.UserId, 
+		post.ChannelId, 
+		post.Message)
 	
 	// Don't respond to our own messages
 	if post.UserId == b.config.BotUserID {
+		log.Printf("[%s] SKIP: Ignoring own message", time.Now().Format("2006-01-02 15:04:05"))
 		return
 	}
 	
-	// Only respond to mentions
-	if strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID) {
+	// Check if we should respond
+	shouldRespond := strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID)
+	if shouldRespond {
+		log.Printf("[%s] MENTION: Bot mentioned, preparing response", time.Now().Format("2006-01-02 15:04:05"))
 		b.respondToMessage(&post)
+	} else {
+		log.Printf("[%s] SKIP: No mention detected", time.Now().Format("2006-01-02 15:04:05"))
 	}
 }
 
@@ -87,36 +100,55 @@ func (b *Bot) respondToMessage(post *model.Post) {
 	// Echo the message back with a prefix
 	response := fmt.Sprintf("Echo: %s", post.Message)
 	
+	log.Printf("[%s] OUTGOING: Sending response to channel %s: %s", 
+		time.Now().Format("2006-01-02 15:04:05"), 
+		post.ChannelId, 
+		response)
+	
 	newPost := &model.Post{
 		ChannelId: post.ChannelId,
 		Message:   response,
 	}
 
 	if _, _, err := b.client.CreatePost(newPost); err != nil {
-		log.Printf("Failed to send message: %v", err)
+		log.Printf("[%s] ERROR: Failed to send message: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+	} else {
+		log.Printf("[%s] SUCCESS: Message sent successfully", time.Now().Format("2006-01-02 15:04:05"))
 	}
 }
 
 func (b *Bot) start() {
+	log.Printf("[%s] STARTUP: Starting agent bot...", time.Now().Format("2006-01-02 15:04:05"))
+	log.Printf("[%s] CONFIG: Server URL: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.ServerURL)
+	log.Printf("[%s] CONFIG: Bot User ID: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.BotUserID)
+	
 	// Start WebSocket connection to listen for events
-	webSocketClient, err := model.NewWebSocketClient4("ws://localhost:8065", b.client.AuthToken)
+	wsURL := strings.Replace(b.config.ServerURL, "http://", "ws://", 1)
+	log.Printf("[%s] WEBSOCKET: Connecting to %s", time.Now().Format("2006-01-02 15:04:05"), wsURL)
+	
+	webSocketClient, err := model.NewWebSocketClient4(wsURL, b.client.AuthToken)
 	if err != nil {
-		log.Fatal("Failed to connect to WebSocket:", err)
+		log.Fatalf("[%s] FATAL: Failed to connect to WebSocket: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 	}
 	
 	webSocketClient.Listen()
+	log.Printf("[%s] WEBSOCKET: Connection established, listening for events", time.Now().Format("2006-01-02 15:04:05"))
 	
 	// Listen for message events
 	go func() {
 		for event := range webSocketClient.EventChannel {
 			if event.EventType() == model.WebsocketEventPosted {
+				log.Printf("[%s] EVENT: Received post event", time.Now().Format("2006-01-02 15:04:05"))
 				b.handleWebSocketEvent(event)
+			} else {
+				log.Printf("[%s] EVENT: Received event type: %s", time.Now().Format("2006-01-02 15:04:05"), event.EventType())
 			}
 		}
 	}()
 	
 	// Keep HTTP server for health checks
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("[%s] HEALTH: Health check requested", time.Now().Format("2006-01-02 15:04:05"))
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
 	})
@@ -126,7 +158,7 @@ func (b *Bot) start() {
 		port = "8081"
 	}
 	
-	log.Printf("Bot listening on port %s (WebSocket connected)", port)
+	log.Printf("[%s] SERVER: Bot listening on port %s (WebSocket connected)", time.Now().Format("2006-01-02 15:04:05"), port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
