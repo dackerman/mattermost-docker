@@ -20,8 +20,11 @@ type Config struct {
 }
 
 type Bot struct {
-	client *model.Client4
-	config Config
+	client          *model.Client4
+	config          Config
+	wsClient        *model.WebSocketClient
+	reconnectTicker *time.Ticker
+	stopChan        chan struct{}
 }
 
 func NewBot(config Config) *Bot {
@@ -29,8 +32,9 @@ func NewBot(config Config) *Bot {
 	client.SetToken(config.AccessToken)
 	
 	return &Bot{
-		client: client,
-		config: config,
+		client:   client,
+		config:   config,
+		stopChan: make(chan struct{}),
 	}
 }
 
@@ -117,40 +121,112 @@ func (b *Bot) respondToMessage(post *model.Post) {
 	}
 }
 
+func (b *Bot) connectWebSocket() error {
+	wsURL := strings.Replace(b.config.ServerURL, "http://", "ws://", 1)
+	log.Printf("[%s] WEBSOCKET: Connecting to %s", time.Now().Format("2006-01-02 15:04:05"), wsURL)
+	
+	wsClient, err := model.NewWebSocketClient4(wsURL, b.client.AuthToken)
+	if err != nil {
+		return fmt.Errorf("failed to create WebSocket client: %v", err)
+	}
+	
+	wsClient.Listen()
+	b.wsClient = wsClient
+	log.Printf("[%s] WEBSOCKET: Connection established, listening for events", time.Now().Format("2006-01-02 15:04:05"))
+	
+	return nil
+}
+
+func (b *Bot) isWebSocketConnected() bool {
+	return b.wsClient != nil && b.wsClient.EventChannel != nil
+}
+
+func (b *Bot) handleWebSocketReconnection() {
+	b.reconnectTicker = time.NewTicker(10 * time.Second)
+	
+	go func() {
+		for {
+			select {
+			case <-b.reconnectTicker.C:
+				if !b.isWebSocketConnected() {
+					log.Printf("[%s] WEBSOCKET: Connection lost, attempting to reconnect...", time.Now().Format("2006-01-02 15:04:05"))
+					
+					if err := b.connectWebSocket(); err != nil {
+						log.Printf("[%s] WEBSOCKET: Reconnection failed: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+					} else {
+						log.Printf("[%s] WEBSOCKET: Reconnected successfully", time.Now().Format("2006-01-02 15:04:05"))
+						b.startEventListener()
+					}
+				}
+			case <-b.stopChan:
+				b.reconnectTicker.Stop()
+				return
+			}
+		}
+	}()
+}
+
+func (b *Bot) startEventListener() {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[%s] WEBSOCKET: Event listener panicked: %v", time.Now().Format("2006-01-02 15:04:05"), r)
+				b.wsClient = nil
+			}
+		}()
+		
+		if b.wsClient == nil || b.wsClient.EventChannel == nil {
+			log.Printf("[%s] WEBSOCKET: No WebSocket client or event channel", time.Now().Format("2006-01-02 15:04:05"))
+			return
+		}
+		
+		for {
+			select {
+			case event, ok := <-b.wsClient.EventChannel:
+				if !ok {
+					log.Printf("[%s] WEBSOCKET: Event channel closed, connection lost", time.Now().Format("2006-01-02 15:04:05"))
+					b.wsClient = nil
+					return
+				}
+				
+				if event.EventType() == model.WebsocketEventPosted {
+					log.Printf("[%s] EVENT: Received post event", time.Now().Format("2006-01-02 15:04:05"))
+					b.handleWebSocketEvent(event)
+				} else {
+					log.Printf("[%s] EVENT: Received event type: %s", time.Now().Format("2006-01-02 15:04:05"), event.EventType())
+				}
+			case <-b.stopChan:
+				return
+			}
+		}
+	}()
+}
+
 func (b *Bot) start() {
 	log.Printf("[%s] STARTUP: Starting agent bot...", time.Now().Format("2006-01-02 15:04:05"))
 	log.Printf("[%s] CONFIG: Server URL: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.ServerURL)
 	log.Printf("[%s] CONFIG: Bot User ID: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.BotUserID)
 	
-	// Start WebSocket connection to listen for events
-	wsURL := strings.Replace(b.config.ServerURL, "http://", "ws://", 1)
-	log.Printf("[%s] WEBSOCKET: Connecting to %s", time.Now().Format("2006-01-02 15:04:05"), wsURL)
-	
-	webSocketClient, err := model.NewWebSocketClient4(wsURL, b.client.AuthToken)
-	if err != nil {
+	// Initial WebSocket connection
+	if err := b.connectWebSocket(); err != nil {
 		log.Fatalf("[%s] FATAL: Failed to connect to WebSocket: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 	}
 	
-	webSocketClient.Listen()
-	log.Printf("[%s] WEBSOCKET: Connection established, listening for events", time.Now().Format("2006-01-02 15:04:05"))
+	// Start event listener
+	b.startEventListener()
 	
-	// Listen for message events
-	go func() {
-		for event := range webSocketClient.EventChannel {
-			if event.EventType() == model.WebsocketEventPosted {
-				log.Printf("[%s] EVENT: Received post event", time.Now().Format("2006-01-02 15:04:05"))
-				b.handleWebSocketEvent(event)
-			} else {
-				log.Printf("[%s] EVENT: Received event type: %s", time.Now().Format("2006-01-02 15:04:05"), event.EventType())
-			}
-		}
-	}()
+	// Start reconnection handler
+	b.handleWebSocketReconnection()
 	
 	// Keep HTTP server for health checks
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[%s] HEALTH: Health check requested", time.Now().Format("2006-01-02 15:04:05"))
+		status := "OK"
+		if !b.isWebSocketConnected() {
+			status = "WebSocket Disconnected"
+		}
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
+		w.Write([]byte(status))
 	})
 	
 	port := os.Getenv("PORT")
