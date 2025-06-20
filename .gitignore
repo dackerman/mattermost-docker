@@ -1,0 +1,31 @@
+# Environment files with secrets
+.env
+.env.*
+
+# Runtime data directories
+data/
+logs/
+config/
+plugins/
+
+# Docker volumes (if using bind mounts)
+postgres-data/
+mattermost-data/
+mattermost-config/
+mattermost-logs/
+mattermost-plugins/
+
+# Backup files
+*.tar.gz
+*backup*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

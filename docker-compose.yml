@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: mattermost-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mattermost
+      POSTGRES_PASSWORD: mattermost_password
+      POSTGRES_DB: mattermost
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - mattermost-network
+
+  mattermost:
+    image: mattermost/mattermost-enterprise-edition:latest
+    container_name: mattermost-app
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      # Database settings
+      MM_SQLSETTINGS_DRIVERNAME: postgres
+      MM_SQLSETTINGS_DATASOURCE: postgres://mattermost:mattermost_password@postgres:5432/mattermost?sslmode=disable&connect_timeout=10
+
+      # Basic server settings
+      MM_SERVICESETTINGS_SITEURL: http://localhost:8065
+      MM_SERVICESETTINGS_LISTENADDRESS: ":8065"
+      MM_SERVICESETTINGS_ENABLEBOTACCOUNTCREATION: true
+
+      # File and plugin settings
+      MM_FILESETTINGS_ENABLEFILEATTACHMENTS: true
+      MM_FILESETTINGS_MAXFILESIZE: 52428800
+      MM_PLUGINSETTINGS_ENABLE: true
+      MM_PLUGINSETTINGS_ENABLEUPLOADS: true
+      MM_PLUGINSETTINGS_ALLOWINSECUREDOWNLOADURL: true
+
+      # Integration settings
+      MM_SERVICESETTINGS_ENABLEINCOMINGWEBHOOKS: true
+      MM_SERVICESETTINGS_ENABLEOUTGOINGWEBHOOKS: true
+      MM_SERVICESETTINGS_ENABLECOMMANDS: true
+
+      # Security (change these in production!)
+      MM_SERVICESETTINGS_ENABLEDEVELOPER: false
+    ports:
+      - "8065:8065"
+    volumes:
+      - mattermost-config:/mattermost/config
+      - mattermost-data:/mattermost/data
+      - mattermost-logs:/mattermost/logs
+      - mattermost-plugins:/mattermost/plugins
+    networks:
+      - mattermost-network
+
+networks:
+  mattermost-network:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  mattermost-config:
+  mattermost-data:
+  mattermost-logs:
+  mattermost-plugins:
