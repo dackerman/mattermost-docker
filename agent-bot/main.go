@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,14 +10,123 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/joho/godotenv"
 	"github.com/mattermost/mattermost-server/v6/model"
 )
 
 type Config struct {
-	ServerURL   string
-	AccessToken string
-	BotUserID   string
+	ServerURL     string
+	AccessToken   string
+	BotUserID     string
+	AnthropicKey  string
+}
+
+// LLMBackend interface for pluggable LLM providers
+type LLMBackend interface {
+	Prompt(ctx context.Context, text string) (string, error)
+}
+
+// AnthropicBackend implements LLMBackend using Anthropic's Claude
+type AnthropicBackend struct {
+	client *anthropic.Client
+	model  string
+}
+
+func NewAnthropicBackend(apiKey string) *AnthropicBackend {
+	// Set API key as environment variable for the client
+	os.Setenv("ANTHROPIC_API_KEY", apiKey)
+	client := anthropic.NewClient()
+	return &AnthropicBackend{
+		client: &client,
+		model:  "claude-3-5-sonnet-20241022", // Use string literal for model
+	}
+}
+
+func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, error) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	log.Printf("[%s] LLM: Starting Anthropic API call", timestamp)
+	log.Printf("[%s] LLM: Model: %s", timestamp, a.model)
+	log.Printf("[%s] LLM: Input prompt (%d chars): %s", timestamp, len(text), text)
+	log.Printf("[%s] LLM: Max tokens: 4096", timestamp)
+	
+	startTime := time.Now()
+	
+	resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		Model:     anthropic.Model(a.model),
+		MaxTokens: 4096,
+		Messages: []anthropic.MessageParam{
+			anthropic.NewUserMessage(anthropic.NewTextBlock(text)),
+		},
+	})
+	
+	duration := time.Since(startTime)
+	
+	if err != nil {
+		log.Printf("[%s] LLM: API call failed after %v: %v", timestamp, duration, err)
+		return "", fmt.Errorf("anthropic API error: %v", err)
+	}
+	
+	log.Printf("[%s] LLM: API call completed in %v", timestamp, duration)
+	log.Printf("[%s] LLM: Response ID: %s", timestamp, resp.ID)
+	log.Printf("[%s] LLM: Model used: %s", timestamp, resp.Model)
+	log.Printf("[%s] LLM: Stop reason: %s", timestamp, resp.StopReason)
+	log.Printf("[%s] LLM: Usage - Input tokens: %d, Output tokens: %d", timestamp, resp.Usage.InputTokens, resp.Usage.OutputTokens)
+	log.Printf("[%s] LLM: Content blocks received: %d", timestamp, len(resp.Content))
+	
+	if len(resp.Content) == 0 {
+		log.Printf("[%s] LLM: ERROR: No content blocks in response", timestamp)
+		return "", fmt.Errorf("no content in response")
+	}
+	
+	// Log each content block for debugging
+	for i, block := range resp.Content {
+		log.Printf("[%s] LLM: Content block %d: %+v", timestamp, i, block)
+	}
+	
+	// Extract text from content blocks
+	var result strings.Builder
+	for i, block := range resp.Content {
+		// Use reflection to access the Text field
+		blockValue := fmt.Sprintf("%+v", block)
+		log.Printf("[%s] LLM: Block %d raw string: %s", timestamp, i, blockValue)
+		
+		// Try to extract text using string parsing as a workaround
+		if strings.Contains(blockValue, "Text:") {
+			// Extract text between "Text:" and the next field or closing brace
+			start := strings.Index(blockValue, "Text:")
+			if start != -1 {
+				textPart := blockValue[start+5:] // Skip "Text:"
+				
+				// Find the end of the text field
+				var endIdx int
+				if strings.Contains(textPart, " Type:") {
+					endIdx = strings.Index(textPart, " Type:")
+				} else if strings.Contains(textPart, "}") {
+					endIdx = strings.Index(textPart, "}")
+				} else {
+					endIdx = len(textPart)
+				}
+				
+				if endIdx > 0 {
+					extractedText := strings.TrimSpace(textPart[:endIdx])
+					log.Printf("[%s] LLM: Extracted text from block %d: %s", timestamp, i, extractedText)
+					result.WriteString(extractedText)
+				}
+			}
+		}
+	}
+	
+	finalResult := result.String()
+	if finalResult == "" {
+		// Fallback if extraction failed
+		finalResult = "I received your message and processed it with Claude, but had trouble extracting the response text."
+		log.Printf("[%s] LLM: Text extraction failed, using fallback", timestamp)
+	} else {
+		log.Printf("[%s] LLM: Successfully extracted response text (%d chars)", timestamp, len(finalResult))
+	}
+	
+	return finalResult, nil
 }
 
 type Bot struct {
@@ -25,16 +135,20 @@ type Bot struct {
 	wsClient        *model.WebSocketClient
 	reconnectTicker *time.Ticker
 	stopChan        chan struct{}
+	llmBackend      LLMBackend
+	activeThreads   map[string]bool // Track threads where bot is actively participating
 }
 
-func NewBot(config Config) *Bot {
+func NewBot(config Config, llmBackend LLMBackend) *Bot {
 	client := model.NewAPIv4Client(config.ServerURL)
 	client.SetToken(config.AccessToken)
 	
 	return &Bot{
-		client:   client,
-		config:   config,
-		stopChan: make(chan struct{}),
+		client:        client,
+		config:        config,
+		stopChan:      make(chan struct{}),
+		llmBackend:    llmBackend,
+		activeThreads: make(map[string]bool),
 	}
 }
 
@@ -91,27 +205,86 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	}
 	
 	// Check if we should respond
-	shouldRespond := strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID)
+	isMentioned := strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID)
+	isInActiveThread := b.activeThreads[post.RootId] && post.RootId != ""
+	isDM := post.Type == "D" // Direct message
+	
+	shouldRespond := isMentioned || isDM
+	
+	// Also respond in active threads, but decide if we should based on content
+	if !shouldRespond && isInActiveThread {
+		shouldRespond = b.shouldRespondInThread(&post)
+	}
+	
 	if shouldRespond {
-		log.Printf("[%s] MENTION: Bot mentioned, preparing response", time.Now().Format("2006-01-02 15:04:05"))
+		if isMentioned {
+			log.Printf("[%s] MENTION: Bot mentioned, preparing response", time.Now().Format("2006-01-02 15:04:05"))
+		} else if isDM {
+			log.Printf("[%s] DM: Direct message received, preparing response", time.Now().Format("2006-01-02 15:04:05"))
+		} else if isInActiveThread {
+			log.Printf("[%s] THREAD: Responding in active thread", time.Now().Format("2006-01-02 15:04:05"))
+		}
 		b.respondToMessage(&post)
 	} else {
-		log.Printf("[%s] SKIP: No mention detected", time.Now().Format("2006-01-02 15:04:05"))
+		log.Printf("[%s] SKIP: No mention/DM/thread participation needed", time.Now().Format("2006-01-02 15:04:05"))
 	}
 }
 
+func (b *Bot) shouldRespondInThread(post *model.Post) bool {
+	// Simple heuristic: respond if the message seems to be asking a question or addressing the conversation
+	message := strings.ToLower(post.Message)
+	
+	// Question indicators
+	if strings.Contains(message, "?") {
+		return true
+	}
+	
+	// Direct conversation indicators
+	questionWords := []string{"how", "what", "when", "where", "why", "who", "can you", "could you", "would you", "do you"}
+	for _, word := range questionWords {
+		if strings.Contains(message, word) {
+			return true
+		}
+	}
+	
+	// Skip if it seems like casual conversation between others
+	if len(message) < 10 || strings.Contains(message, "lol") || strings.Contains(message, "haha") {
+		return false
+	}
+	
+	return true // Default to participating in active threads
+}
+
 func (b *Bot) respondToMessage(post *model.Post) {
-	// Echo the message back with a prefix
-	response := fmt.Sprintf("Echo: %s", post.Message)
+	ctx := context.Background()
+	
+	// Get LLM response
+	response, err := b.llmBackend.Prompt(ctx, post.Message)
+	if err != nil {
+		log.Printf("[%s] ERROR: LLM request failed: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		response = "I'm sorry, I'm having trouble processing your request right now. Please try again later."
+	}
 	
 	log.Printf("[%s] OUTGOING: Sending response to channel %s: %s", 
 		time.Now().Format("2006-01-02 15:04:05"), 
 		post.ChannelId, 
-		response)
+		response[:min(100, len(response))]+"...")
 	
 	newPost := &model.Post{
 		ChannelId: post.ChannelId,
 		Message:   response,
+	}
+	
+	// If this is a reply to a mention, create a thread
+	if strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID) {
+		newPost.RootId = post.Id
+		// Mark this thread as active
+		b.activeThreads[post.Id] = true
+		log.Printf("[%s] THREAD: Created thread for post %s", time.Now().Format("2006-01-02 15:04:05"), post.Id)
+	} else if post.RootId != "" {
+		// Continue in existing thread
+		newPost.RootId = post.RootId
+		b.activeThreads[post.RootId] = true
 	}
 
 	if _, _, err := b.client.CreatePost(newPost); err != nil {
@@ -119,6 +292,13 @@ func (b *Bot) respondToMessage(post *model.Post) {
 	} else {
 		log.Printf("[%s] SUCCESS: Message sent successfully", time.Now().Format("2006-01-02 15:04:05"))
 	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (b *Bot) connectWebSocket() error {
@@ -245,15 +425,23 @@ func main() {
 	}
 
 	config := Config{
-		ServerURL:   os.Getenv("MATTERMOST_SERVER_URL"),
-		AccessToken: os.Getenv("MATTERMOST_ACCESS_TOKEN"),
-		BotUserID:   os.Getenv("MATTERMOST_BOT_USER_ID"),
+		ServerURL:    os.Getenv("MATTERMOST_SERVER_URL"),
+		AccessToken:  os.Getenv("MATTERMOST_ACCESS_TOKEN"),
+		BotUserID:    os.Getenv("MATTERMOST_BOT_USER_ID"),
+		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
 	}
 
 	if config.ServerURL == "" || config.AccessToken == "" {
 		log.Fatal("Missing required environment variables: MATTERMOST_SERVER_URL, MATTERMOST_ACCESS_TOKEN")
 	}
+	
+	if config.AnthropicKey == "" {
+		log.Fatal("Missing required environment variable: ANTHROPIC_API_KEY")
+	}
 
-	bot := NewBot(config)
+	// Initialize LLM backend
+	llmBackend := NewAnthropicBackend(config.AnthropicKey)
+	
+	bot := NewBot(config, llmBackend)
 	bot.start()
 }

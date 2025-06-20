@@ -1,6 +1,14 @@
 # Agent Bot
 
-A simple Mattermost bot that currently echoes messages. Built as a foundation for AI agent functionality.
+A Mattermost bot powered by Anthropic's Claude AI with robust WebSocket connectivity and thread management.
+
+## Features
+
+- **AI-Powered Responses**: Uses Anthropic's Claude for intelligent conversation
+- **Thread Management**: Creates and participates in threaded conversations
+- **WebSocket Auto-Reconnection**: Survives server restarts automatically
+- **Pluggable LLM Backend**: Easy to swap different AI providers
+- **Smart Response Logic**: Decides when to participate in conversations
 
 ## Setup
 
@@ -13,26 +21,36 @@ cp .env.example .env
 - `MATTERMOST_SERVER_URL`: Your Mattermost server URL
 - `MATTERMOST_ACCESS_TOKEN`: Bot's access token from Mattermost
 - `MATTERMOST_BOT_USER_ID`: Bot's user ID
+- `ANTHROPIC_API_KEY`: Your Anthropic API key
 
 3. Run the bot:
 ```bash
 go run main.go
 ```
 
-## Bot Creation
+## Bot Behavior
 
-To create the bot account in Mattermost:
-1. Go to System Console > Integrations > Bot Accounts
-2. Enable "Bot Account Creation"
-3. Create new bot account and copy the access token
-4. Add bot to desired teams/channels
+- **@mentions**: Responds to direct mentions and creates threads
+- **Direct Messages**: Responds to all DMs
+- **Thread Participation**: Continues conversations in active threads
+- **Smart Filtering**: Uses heuristics to decide when to respond
 
-## Current Behavior
+## Architecture
 
-- Responds to mentions with "Echo: [original message]"
-- Responds to direct messages
-- Ignores its own messages
+- **LLMBackend Interface**: Pluggable design for different AI providers
+- **AnthropicBackend**: Current implementation using Claude
+- **Thread Tracking**: Maintains state of active conversations
+- **Connection Recovery**: Automatic WebSocket reconnection
+
+## Health Monitoring
+
+Check bot status: `curl http://localhost:8081/health`
+- Returns "OK" if WebSocket connected
+- Returns "WebSocket Disconnected" if connection lost
 
 ## Future Enhancements
 
-This bot is designed to be enhanced with AI agent capabilities.
+- Additional LLM backends (OpenAI, etc.)
+- Conversation context management
+- Enhanced thread logic
+- Message history integration
