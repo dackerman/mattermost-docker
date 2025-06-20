@@ -1,0 +1,3 @@
+[submodule "mattermost-plugin-agents"]
+	path = mattermost-plugin-agents
+	url = https://github.com/dackerman/mattermost-plugin-agents.git
