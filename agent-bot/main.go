@@ -39,7 +39,7 @@ func NewAnthropicBackend(apiKey string) *AnthropicBackend {
 	client := anthropic.NewClient()
 	return &AnthropicBackend{
 		client: &client,
-		model:  "claude-3-5-sonnet-20241022", // Use string literal for model
+		model:  "claude-sonnet-4-20250514", // Claude 4 Sonnet latest
 	}
 }
 
