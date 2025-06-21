@@ -79,51 +79,29 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		return "", fmt.Errorf("no content in response")
 	}
 	
-	// Log each content block for debugging
-	for i, block := range resp.Content {
-		log.Printf("[%s] LLM: Content block %d: %+v", timestamp, i, block)
-	}
-	
-	// Extract text from content blocks
+	// Extract text from content blocks using proper type assertion
 	var result strings.Builder
 	for i, block := range resp.Content {
-		// Use reflection to access the Text field
-		blockValue := fmt.Sprintf("%+v", block)
-		log.Printf("[%s] LLM: Block %d raw string: %s", timestamp, i, blockValue)
+		log.Printf("[%s] LLM: Processing content block %d", timestamp, i)
 		
-		// Try to extract text using string parsing as a workaround
-		if strings.Contains(blockValue, "Text:") {
-			// Extract text between "Text:" and the next field or closing brace
-			start := strings.Index(blockValue, "Text:")
-			if start != -1 {
-				textPart := blockValue[start+5:] // Skip "Text:"
-				
-				// Find the end of the text field
-				var endIdx int
-				if strings.Contains(textPart, " Type:") {
-					endIdx = strings.Index(textPart, " Type:")
-				} else if strings.Contains(textPart, "}") {
-					endIdx = strings.Index(textPart, "}")
-				} else {
-					endIdx = len(textPart)
-				}
-				
-				if endIdx > 0 {
-					extractedText := strings.TrimSpace(textPart[:endIdx])
-					log.Printf("[%s] LLM: Extracted text from block %d: %s", timestamp, i, extractedText)
-					result.WriteString(extractedText)
-				}
-			}
+		// Use proper type assertion to extract text
+		switch content := block.AsAny().(type) {
+		case anthropic.TextBlock:
+			text := content.Text
+			log.Printf("[%s] LLM: Extracted text from block %d (%d chars): %s", timestamp, i, len(text), text)
+			result.WriteString(text)
+		default:
+			log.Printf("[%s] LLM: Block %d is not a text block, type: %T", timestamp, i, content)
 		}
 	}
 	
 	finalResult := result.String()
 	if finalResult == "" {
-		// Fallback if extraction failed
-		finalResult = "I received your message and processed it with Claude, but had trouble extracting the response text."
-		log.Printf("[%s] LLM: Text extraction failed, using fallback", timestamp)
+		// Fallback if no text blocks found
+		finalResult = "I received your message and processed it with Claude, but no text content was returned."
+		log.Printf("[%s] LLM: No text content extracted, using fallback", timestamp)
 	} else {
-		log.Printf("[%s] LLM: Successfully extracted response text (%d chars)", timestamp, len(finalResult))
+		log.Printf("[%s] LLM: Successfully extracted response text (%d chars total)", timestamp, len(finalResult))
 	}
 	
 	return finalResult, nil
@@ -255,11 +233,89 @@ func (b *Bot) shouldRespondInThread(post *model.Post) bool {
 	return true // Default to participating in active threads
 }
 
+func (b *Bot) getThreadContext(post *model.Post) (string, error) {
+	// If this is not a threaded message, just return the current message
+	rootId := post.RootId
+	if rootId == "" {
+		rootId = post.Id // If this will become the root of a new thread
+	}
+	
+	// Get all posts in the thread
+	threadPosts, _, err := b.client.GetPostThread(rootId, "", true)
+	if err != nil {
+		log.Printf("[%s] THREAD: Failed to get thread context: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		return post.Message, nil // Fallback to just the current message
+	}
+	
+	// Note: We identify the bot by UserID comparison instead of fetching user info
+	
+	// Build context string
+	var contextBuilder strings.Builder
+	contextBuilder.WriteString("Previous conversation context:\n\n")
+	
+	// Sort posts by creation time
+	posts := make([]*model.Post, 0, len(threadPosts.Posts))
+	for _, p := range threadPosts.Posts {
+		posts = append(posts, p)
+	}
+	
+	// Sort by CreateAt timestamp
+	for i := 0; i < len(posts); i++ {
+		for j := i + 1; j < len(posts); j++ {
+			if posts[i].CreateAt > posts[j].CreateAt {
+				posts[i], posts[j] = posts[j], posts[i]
+			}
+		}
+	}
+	
+	// Format each post with speaker identification
+	for _, p := range posts {
+		if p.Id == post.Id {
+			continue // Skip the current message, we'll add it separately
+		}
+		
+		// Get user info for this post
+		user, _, err := b.client.GetUser(p.UserId, "")
+		var speaker string
+		if err != nil {
+			speaker = "Unknown User"
+		} else if p.UserId == b.config.BotUserID {
+			speaker = "Assistant" // This is the bot
+		} else {
+			speaker = user.Username
+		}
+		
+		contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", speaker, p.Message))
+	}
+	
+	// Add current message
+	currentUser, _, err := b.client.GetUser(post.UserId, "")
+	var currentSpeaker string
+	if err != nil {
+		currentSpeaker = "User"
+	} else {
+		currentSpeaker = currentUser.Username
+	}
+	
+	contextBuilder.WriteString(fmt.Sprintf("\n%s: %s", currentSpeaker, post.Message))
+	
+	result := contextBuilder.String()
+	log.Printf("[%s] THREAD: Built context with %d posts (%d chars)", time.Now().Format("2006-01-02 15:04:05"), len(posts), len(result))
+	return result, nil
+}
+
 func (b *Bot) respondToMessage(post *model.Post) {
 	ctx := context.Background()
 	
-	// Get LLM response
-	response, err := b.llmBackend.Prompt(ctx, post.Message)
+	// Get thread context for coherent responses
+	prompt, err := b.getThreadContext(post)
+	if err != nil {
+		log.Printf("[%s] ERROR: Failed to get thread context: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		prompt = post.Message // Fallback to just the current message
+	}
+	
+	// Get LLM response with full context
+	response, err := b.llmBackend.Prompt(ctx, prompt)
 	if err != nil {
 		log.Printf("[%s] ERROR: LLM request failed: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 		response = "I'm sorry, I'm having trouble processing your request right now. Please try again later."
