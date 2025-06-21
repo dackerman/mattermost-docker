@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -199,38 +198,15 @@ func (b *Bot) cleanupStaleThreads() {
 }
 
 func (b *Bot) sendTypingIndicator(channelID, parentID string) error {
-	// Prepare typing indicator data
-	typingData := map[string]interface{}{
-		"channel_id": channelID,
-	}
-	if parentID != "" {
-		typingData["parent_id"] = parentID
+	// Use official Mattermost client method
+	typingRequest := model.TypingRequest{
+		ChannelId: channelID,
+		ParentId:  parentID,
 	}
 	
-	jsonData, err := json.Marshal(typingData)
+	_, err := b.client.PublishUserTyping(b.config.BotUserID, typingRequest)
 	if err != nil {
-		return fmt.Errorf("failed to marshal typing data: %v", err)
-	}
-	
-	// Create HTTP request
-	req, err := http.NewRequest("POST", b.config.ServerURL+"/api/v4/users/me/typing", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return fmt.Errorf("failed to create typing request: %v", err)
-	}
-	
-	req.Header.Set("Authorization", "Bearer "+b.config.AccessToken)
-	req.Header.Set("Content-Type", "application/json")
-	
-	// Send request
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("typing indicator request failed: %v", err)
-	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("typing indicator failed with status: %d", resp.StatusCode)
+		return fmt.Errorf("typing indicator failed: %v", err)
 	}
 	
 	return nil
