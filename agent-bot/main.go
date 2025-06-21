@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -189,6 +190,44 @@ func (b *Bot) cleanupStaleThreads() {
 	log.Printf("[%s] CLEANUP: Completed, %d active threads remaining", time.Now().Format("2006-01-02 15:04:05"), len(b.activeThreads))
 }
 
+func (b *Bot) sendTypingIndicator(channelID, parentID string) error {
+	// Prepare typing indicator data
+	typingData := map[string]interface{}{
+		"channel_id": channelID,
+	}
+	if parentID != "" {
+		typingData["parent_id"] = parentID
+	}
+	
+	jsonData, err := json.Marshal(typingData)
+	if err != nil {
+		return fmt.Errorf("failed to marshal typing data: %v", err)
+	}
+	
+	// Create HTTP request
+	req, err := http.NewRequest("POST", b.config.ServerURL+"/api/v4/users/me/typing", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create typing request: %v", err)
+	}
+	
+	req.Header.Set("Authorization", "Bearer "+b.config.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	
+	// Send request
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("typing indicator request failed: %v", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("typing indicator failed with status: %d", resp.StatusCode)
+	}
+	
+	return nil
+}
+
 func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	// Periodically clean up stale thread references
 	b.cleanupStaleThreads()
@@ -342,6 +381,18 @@ func (b *Bot) getThreadContext(post *model.Post) (string, error) {
 
 func (b *Bot) respondToMessage(post *model.Post) {
 	ctx := context.Background()
+	
+	// Send typing indicator immediately
+	parentID := ""
+	if post.RootId != "" {
+		parentID = post.RootId
+	}
+	
+	if err := b.sendTypingIndicator(post.ChannelId, parentID); err != nil {
+		log.Printf("[%s] WARNING: Failed to send typing indicator: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+	} else {
+		log.Printf("[%s] TYPING: Sent typing indicator for channel %s", time.Now().Format("2006-01-02 15:04:05"), post.ChannelId)
+	}
 	
 	// Get thread context for coherent responses
 	prompt, err := b.getThreadContext(post)
