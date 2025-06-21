@@ -50,6 +50,7 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	log.Printf("[%s] LLM: Model: %s", timestamp, a.model)
 	log.Printf("[%s] LLM: Input prompt (%d chars): %s", timestamp, len(text), text)
 	log.Printf("[%s] LLM: Max tokens: 4096", timestamp)
+	log.Printf("[%s] LLM: Web search enabled (max 3 searches)", timestamp)
 	
 	startTime := time.Now()
 	
@@ -58,6 +59,13 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		MaxTokens: 4096,
 		Messages: []anthropic.MessageParam{
 			anthropic.NewUserMessage(anthropic.NewTextBlock(text)),
+		},
+		Tools: []anthropic.ToolUnionParam{
+			{
+				OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
+					MaxUses: anthropic.Int(3), // Limit to 3 searches per request
+				},
+			},
 		},
 	})
 	
