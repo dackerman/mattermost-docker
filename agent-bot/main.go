@@ -115,6 +115,7 @@ type Bot struct {
 	stopChan        chan struct{}
 	llmBackend      LLMBackend
 	activeThreads   map[string]bool // Track threads where bot is actively participating
+	lastCleanup     time.Time       // Track when we last cleaned up stale threads
 }
 
 func NewBot(config Config, llmBackend LLMBackend) *Bot {
@@ -127,6 +128,7 @@ func NewBot(config Config, llmBackend LLMBackend) *Bot {
 		stopChan:      make(chan struct{}),
 		llmBackend:    llmBackend,
 		activeThreads: make(map[string]bool),
+		lastCleanup:   time.Now(),
 	}
 }
 
@@ -156,7 +158,41 @@ func (b *Bot) handleWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (b *Bot) cleanupStaleThreads() {
+	// Clean up stale thread tracking every 10 minutes
+	if time.Since(b.lastCleanup) < 10*time.Minute {
+		return
+	}
+	
+	log.Printf("[%s] CLEANUP: Cleaning up stale thread references", time.Now().Format("2006-01-02 15:04:05"))
+	
+	// Test a few thread IDs to see if they're still accessible
+	staleThreads := make([]string, 0)
+	count := 0
+	for threadId := range b.activeThreads {
+		if count >= 5 { // Only check first 5 to avoid too many API calls
+			break
+		}
+		if _, _, err := b.client.GetPost(threadId, ""); err != nil {
+			staleThreads = append(staleThreads, threadId)
+		}
+		count++
+	}
+	
+	// Remove stale threads
+	for _, threadId := range staleThreads {
+		delete(b.activeThreads, threadId)
+		log.Printf("[%s] CLEANUP: Removed stale thread %s", time.Now().Format("2006-01-02 15:04:05"), threadId)
+	}
+	
+	b.lastCleanup = time.Now()
+	log.Printf("[%s] CLEANUP: Completed, %d active threads remaining", time.Now().Format("2006-01-02 15:04:05"), len(b.activeThreads))
+}
+
 func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
+	// Periodically clean up stale thread references
+	b.cleanupStaleThreads()
+	
 	// Parse post data from event
 	postData, ok := event.GetData()["post"].(string)
 	if !ok {
@@ -331,16 +367,22 @@ func (b *Bot) respondToMessage(post *model.Post) {
 		Message:   response,
 	}
 	
-	// If this is a reply to a mention, create a thread
-	if strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID) {
-		newPost.RootId = post.Id
-		// Mark this thread as active
-		b.activeThreads[post.Id] = true
-		log.Printf("[%s] THREAD: Created thread for post %s", time.Now().Format("2006-01-02 15:04:05"), post.Id)
-	} else if post.RootId != "" {
-		// Continue in existing thread
+	// Handle thread creation and continuation
+	if post.RootId != "" {
+		// This is already part of a thread, continue in it
 		newPost.RootId = post.RootId
 		b.activeThreads[post.RootId] = true
+		log.Printf("[%s] THREAD: Continuing in existing thread %s", time.Now().Format("2006-01-02 15:04:05"), post.RootId)
+	} else if strings.Contains(post.Message, "@agent-bot") || strings.Contains(post.Message, b.config.BotUserID) {
+		// This is a new mention, verify the post exists before creating thread
+		if _, _, err := b.client.GetPost(post.Id, ""); err != nil {
+			log.Printf("[%s] THREAD: Cannot create thread, post %s not accessible: %v", time.Now().Format("2006-01-02 15:04:05"), post.Id, err)
+			// Don't set RootId, post as a regular message
+		} else {
+			newPost.RootId = post.Id
+			b.activeThreads[post.Id] = true
+			log.Printf("[%s] THREAD: Created thread for post %s", time.Now().Format("2006-01-02 15:04:05"), post.Id)
+		}
 	}
 
 	if _, _, err := b.client.CreatePost(newPost); err != nil {
