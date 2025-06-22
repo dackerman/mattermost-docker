@@ -27,6 +27,10 @@ type ListUserTasksArgs struct {
 	WorkspaceGID string `json:"workspace_gid,omitempty" jsonschema_description:"The workspace GID to search within (optional - will use default workspace if only one exists)"`
 }
 
+type ListUsersArgs struct {
+	WorkspaceGID string `json:"workspace_gid,omitempty" jsonschema_description:"The workspace GID to list users from (optional - will use default workspace if only one exists)"`
+}
+
 type Project struct {
 	GID  string `json:"gid"`
 	Name string `json:"name"`
@@ -35,6 +39,12 @@ type Project struct {
 type Workspace struct {
 	GID  string `json:"gid"`
 	Name string `json:"name"`
+}
+
+type User struct {
+	GID   string `json:"gid"`
+	Name  string `json:"name"`
+	Email string `json:"email"`
 }
 
 type Task struct {
@@ -180,6 +190,39 @@ func (c *Client) ListProjectTasks(projectGID string) ([]Task, error) {
 	}
 
 	return tasks, nil
+}
+
+func (c *Client) ListUsers(workspaceGID string) ([]User, error) {
+	// Use default workspace if not specified
+	if workspaceGID == "" {
+		defaultWorkspace, err := c.getDefaultWorkspace()
+		if err != nil {
+			return nil, err
+		}
+		workspaceGID = defaultWorkspace
+	}
+
+	path := fmt.Sprintf("/workspaces/%s/users", workspaceGID)
+	body, err := c.makeRequest("GET", path)
+	if err != nil {
+		return nil, err
+	}
+
+	var response ListResponse
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	var users []User
+	for _, item := range response.Data {
+		var user User
+		if err := json.Unmarshal(item, &user); err != nil {
+			continue // Skip malformed entries
+		}
+		users = append(users, user)
+	}
+
+	return users, nil
 }
 
 func (c *Client) ListUserTasks(assigneeGID, workspaceGID string) ([]Task, error) {

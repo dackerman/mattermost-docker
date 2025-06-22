@@ -84,6 +84,13 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 				InputSchema: ListUserTasksInputSchema,
 			},
 		},
+		{
+			OfTool: &anthropic.ToolParam{
+				Name:        "list_asana_users",
+				Description: anthropic.String("List users in an Asana workspace to get their GIDs for other operations"),
+				InputSchema: ListUsersInputSchema,
+			},
+		},
 	}
 	tools = append(tools, asanaTools...)
 
@@ -190,6 +197,19 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 					} else {
 						response = fmt.Sprintf("Invalid input: %v", err)
 					}
+					
+				case "list_asana_users":
+					var input asana.ListUsersArgs
+					if err := json.Unmarshal(content.Input, &input); err == nil {
+						users, err := a.asanaClient.ListUsers(input.WorkspaceGID)
+						if err != nil {
+							response = fmt.Sprintf("Error listing users: %v", err)
+						} else {
+							response = users
+						}
+					} else {
+						response = fmt.Sprintf("Invalid input: %v", err)
+					}
 				}
 				
 				// Convert response to JSON and add as tool result
@@ -241,3 +261,4 @@ func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 var ListProjectsInputSchema = GenerateSchema[asana.ListProjectsArgs]()
 var ListProjectTasksInputSchema = GenerateSchema[asana.ListProjectTasksArgs]()
 var ListUserTasksInputSchema = GenerateSchema[asana.ListUserTasksArgs]()
+var ListUsersInputSchema = GenerateSchema[asana.ListUsersArgs]()

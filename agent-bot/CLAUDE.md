@@ -100,7 +100,7 @@ shouldRespond = isMentioned || message.IsDM || (isInActiveThread && shouldRespon
 
 ## Asana Tools
 
-Claude has access to three Asana tools when ASANA_API_KEY is set:
+Claude has access to four Asana tools when ASANA_API_KEY is set:
 
 1. **list_asana_projects**
    - Input: `workspace_gid` (optional if single workspace)
@@ -113,6 +113,10 @@ Claude has access to three Asana tools when ASANA_API_KEY is set:
 3. **list_asana_user_tasks**
    - Input: `assignee_gid` (required), `workspace_gid` (optional)
    - Returns: User's incomplete assigned tasks
+
+4. **list_asana_users**
+   - Input: `workspace_gid` (optional if single workspace)
+   - Returns: List of users with GID, name, email
 
 ## Common Tasks
 
