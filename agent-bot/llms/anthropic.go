@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/invopop/jsonschema"
 
 	"agent-bot/asana"
@@ -36,7 +37,11 @@ type AnthropicBackend struct {
 func NewAnthropicBackend(apiKey, asanaKey, model string, maxTokens, maxWebSearch int, enableTools bool) *AnthropicBackend {
 	// Set API key as environment variable for the client
 	os.Setenv("ANTHROPIC_API_KEY", apiKey)
-	client := anthropic.NewClient()
+	
+	// Initialize client with MCP beta support
+	client := anthropic.NewClient(
+		option.WithHeader("anthropic-beta", "mcp-client-2025-04-04"),
+	)
 	
 	// Initialize Asana client with required API key
 	asanaClient := asana.NewClient(asanaKey, &http.Client{})
@@ -64,11 +69,11 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	}
 
 	// Build tools array conditionally
-	var tools []anthropic.ToolUnionParam
+	var tools []anthropic.BetaToolUnionParam
 	if a.enableTools {
-		tools = []anthropic.ToolUnionParam{
+		tools = []anthropic.BetaToolUnionParam{
 			{
-				OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
+				OfWebSearchTool20250305: &anthropic.BetaWebSearchTool20250305Param{
 					MaxUses: anthropic.Int(int64(a.maxWebSearch)), // Configurable max searches per request
 				},
 			},
@@ -76,33 +81,33 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 
 		// Add Asana tools
 		log.Printf("[%s] LLM: Adding Asana tools", timestamp)
-		asanaTools := []anthropic.ToolUnionParam{
+		asanaTools := []anthropic.BetaToolUnionParam{
 			{
-				OfTool: &anthropic.ToolParam{
+				OfTool: &anthropic.BetaToolParam{
 					Name:        "list_asana_projects",
 					Description: anthropic.String("List projects in an Asana workspace"),
-					InputSchema: ListProjectsInputSchema,
+					InputSchema: ListProjectsBetaInputSchema,
 				},
 			},
 			{
-				OfTool: &anthropic.ToolParam{
+				OfTool: &anthropic.BetaToolParam{
 					Name:        "list_asana_project_tasks",
 					Description: anthropic.String("List incomplete tasks in an Asana project"),
-					InputSchema: ListProjectTasksInputSchema,
+					InputSchema: ListProjectTasksBetaInputSchema,
 				},
 			},
 			{
-				OfTool: &anthropic.ToolParam{
+				OfTool: &anthropic.BetaToolParam{
 					Name:        "list_asana_user_tasks",
 					Description: anthropic.String("List incomplete tasks assigned to a user in Asana"),
-					InputSchema: ListUserTasksInputSchema,
+					InputSchema: ListUserTasksBetaInputSchema,
 				},
 			},
 			{
-				OfTool: &anthropic.ToolParam{
+				OfTool: &anthropic.BetaToolParam{
 					Name:        "list_asana_users",
 					Description: anthropic.String("List users in an Asana workspace to get their GIDs for other operations"),
-					InputSchema: ListUsersInputSchema,
+					InputSchema: ListUsersBetaInputSchema,
 				},
 			},
 		}
@@ -110,8 +115,8 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	}
 
 	// Initialize conversation
-	messages := []anthropic.MessageParam{
-		anthropic.NewUserMessage(anthropic.NewTextBlock(text)),
+	messages := []anthropic.BetaMessageParam{
+		anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(text)),
 	}
 
 	var finalResult strings.Builder
@@ -120,15 +125,32 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	for {
 		startTime := time.Now()
 		
-		params := anthropic.MessageNewParams{
+		// Configure MCP servers
+		var mcpServers []anthropic.BetaRequestMCPServerURLDefinitionParam
+		if a.enableTools {
+			log.Printf("[%s] LLM: Adding MCP server: hello-world-mcp", timestamp)
+			mcpServers = []anthropic.BetaRequestMCPServerURLDefinitionParam{
+				{
+					Type: "url",
+					URL:  "http://mcp-server:3000/mcp",
+					Name: "hello-world-mcp",
+					ToolConfiguration: anthropic.BetaRequestMCPServerToolConfigurationParam{
+						Enabled: anthropic.Bool(true),
+					},
+				},
+			}
+		}
+		
+		params := anthropic.BetaMessageNewParams{
 			Model:     anthropic.Model(a.model),
 			MaxTokens: int64(a.maxTokens),
 			Messages:  messages,
+			MCPServers: mcpServers,
 		}
 		if a.enableTools && len(tools) > 0 {
 			params.Tools = tools
 		}
-		resp, err := a.client.Messages.New(ctx, params)
+		resp, err := a.client.Beta.Messages.New(ctx, params)
 		
 		duration := time.Since(startTime)
 		
@@ -149,14 +171,18 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 			log.Printf("[%s] LLM: Processing content block %d", timestamp, i)
 			
 			switch content := block.AsAny().(type) {
-			case anthropic.TextBlock:
+			case anthropic.BetaTextBlock:
 				text := content.Text
 				log.Printf("[%s] LLM: Extracted text from block %d (%d chars): %s", timestamp, i, len(text), text)
 				finalResult.WriteString(text)
-			case anthropic.ToolUseBlock:
+			case anthropic.BetaToolUseBlock:
 				log.Printf("[%s] LLM: Tool use block %d: %s", timestamp, i, content.Name)
 				inputJSON, _ := json.Marshal(content.Input)
 				log.Printf("[%s] LLM: Tool input: %s", timestamp, string(inputJSON))
+			case anthropic.BetaMCPToolUseBlock:
+				log.Printf("[%s] LLM: MCP tool use block %d: %s from server %s", timestamp, i, content.Name, content.ServerName)
+				inputJSON, _ := json.Marshal(content.Input)
+				log.Printf("[%s] LLM: MCP tool input: %s", timestamp, string(inputJSON))
 			default:
 				log.Printf("[%s] LLM: Block %d is not a text or tool use block, type: %T", timestamp, i, content)
 			}
@@ -166,11 +192,11 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		messages = append(messages, resp.ToParam())
 
 		// Handle tool use
-		toolResults := []anthropic.ContentBlockParamUnion{}
+		toolResults := []anthropic.BetaContentBlockParamUnion{}
 		
 		for _, block := range resp.Content {
 			switch content := block.AsAny().(type) {
-			case anthropic.ToolUseBlock:
+			case anthropic.BetaToolUseBlock:
 				log.Printf("[%s] LLM: Executing tool: %s", timestamp, content.Name)
 				
 				var response interface{}
@@ -179,7 +205,8 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 				switch content.Name {
 				case "list_asana_projects":
 					var input asana.ListProjectsArgs
-					if err := json.Unmarshal(content.Input, &input); err == nil {
+					inputBytes, _ := json.Marshal(content.Input)
+					if err := json.Unmarshal(inputBytes, &input); err == nil {
 						projects, err := a.asanaClient.ListProjects(input.WorkspaceGID)
 						if err != nil {
 							response = fmt.Sprintf("Error listing projects: %v", err)
@@ -192,7 +219,8 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 					
 				case "list_asana_project_tasks":
 					var input asana.ListProjectTasksArgs
-					if err := json.Unmarshal(content.Input, &input); err == nil {
+					inputBytes, _ := json.Marshal(content.Input)
+					if err := json.Unmarshal(inputBytes, &input); err == nil {
 						tasks, err := a.asanaClient.ListProjectTasks(input.ProjectGID)
 						if err != nil {
 							response = fmt.Sprintf("Error listing project tasks: %v", err)
@@ -205,7 +233,8 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 					
 				case "list_asana_user_tasks":
 					var input asana.ListUserTasksArgs
-					if err := json.Unmarshal(content.Input, &input); err == nil {
+					inputBytes, _ := json.Marshal(content.Input)
+					if err := json.Unmarshal(inputBytes, &input); err == nil {
 						tasks, err := a.asanaClient.ListUserTasks(input.AssigneeGID, input.WorkspaceGID)
 						if err != nil {
 							response = fmt.Sprintf("Error listing user tasks: %v", err)
@@ -218,7 +247,8 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 					
 				case "list_asana_users":
 					var input asana.ListUsersArgs
-					if err := json.Unmarshal(content.Input, &input); err == nil {
+					inputBytes, _ := json.Marshal(content.Input)
+					if err := json.Unmarshal(inputBytes, &input); err == nil {
 						users, err := a.asanaClient.ListUsers(input.WorkspaceGID)
 						if err != nil {
 							response = fmt.Sprintf("Error listing users: %v", err)
@@ -237,7 +267,14 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 				}
 				
 				log.Printf("[%s] LLM: Tool result: %s", timestamp, string(b))
-				toolResults = append(toolResults, anthropic.NewToolResultBlock(content.ID, string(b), false))
+				toolResults = append(toolResults, anthropic.NewBetaToolResultBlock(content.ID, string(b), false))
+			case anthropic.BetaMCPToolUseBlock:
+				log.Printf("[%s] LLM: Executing MCP tool: %s from server: %s", timestamp, content.Name, content.ServerName)
+				
+				// For MCP tools, the tool execution is handled by the Anthropic API
+				// We just need to add the MCP tool result block
+				log.Printf("[%s] LLM: MCP tool will be executed automatically by API", timestamp)
+				// No explicit handling needed for MCP tools - they're executed by the API
 			}
 		}
 		
@@ -247,7 +284,7 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		}
 		
 		// Add tool results to conversation and continue
-		messages = append(messages, anthropic.NewUserMessage(toolResults...))
+		messages = append(messages, anthropic.NewBetaUserMessage(toolResults...))
 	}
 
 	result := finalResult.String()
@@ -369,8 +406,27 @@ func GenerateSchema[T any]() anthropic.ToolInputSchemaParam {
 	}
 }
 
+// GenerateBetaSchema creates a beta schema for tool input validation
+func GenerateBetaSchema[T any]() anthropic.BetaToolInputSchemaParam {
+	reflector := jsonschema.Reflector{
+		AllowAdditionalProperties: false,
+		DoNotReference:            true,
+	}
+	var v T
+	schema := reflector.Reflect(v)
+	return anthropic.BetaToolInputSchemaParam{
+		Properties: schema.Properties,
+	}
+}
+
 // Asana tool schemas
 var ListProjectsInputSchema = GenerateSchema[asana.ListProjectsArgs]()
 var ListProjectTasksInputSchema = GenerateSchema[asana.ListProjectTasksArgs]()
 var ListUserTasksInputSchema = GenerateSchema[asana.ListUserTasksArgs]()
 var ListUsersInputSchema = GenerateSchema[asana.ListUsersArgs]()
+
+// Beta Asana tool schemas
+var ListProjectsBetaInputSchema = GenerateBetaSchema[asana.ListProjectsArgs]()
+var ListProjectTasksBetaInputSchema = GenerateBetaSchema[asana.ListProjectTasksArgs]()
+var ListUserTasksBetaInputSchema = GenerateBetaSchema[asana.ListUserTasksArgs]()
+var ListUsersBetaInputSchema = GenerateBetaSchema[asana.ListUsersArgs]()
