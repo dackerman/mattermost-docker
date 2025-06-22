@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"agent-bot/types"
-	"github.com/mattermost/mattermost-server/v6/model"
 )
 
 // BotAgent implements the Agent interface to handle incoming messages
@@ -15,18 +14,16 @@ type BotAgent struct {
 	botUserID     string
 	llm           types.LLM
 	chat          types.Chat
-	client        *model.Client4
 	activeThreads map[string]bool
 	lastCleanup   time.Time
 }
 
 // NewBotAgent creates a new agent that handles messages
-func NewBotAgent(botUserID string, llm types.LLM, chat types.Chat, client *model.Client4) *BotAgent {
+func NewBotAgent(botUserID string, llm types.LLM, chat types.Chat) *BotAgent {
 	return &BotAgent{
 		botUserID:     botUserID,
 		llm:           llm,
 		chat:          chat,
-		client:        client,
 		activeThreads: make(map[string]bool),
 		lastCleanup:   time.Now(),
 	}
@@ -159,14 +156,7 @@ func (a *BotAgent) respondToMessage(message types.PostedMessage) {
 }
 
 func (a *BotAgent) sendTypingIndicator(channelID, threadID string) {
-	// Use official Mattermost client method
-	typingRequest := model.TypingRequest{
-		ChannelId: channelID,
-		ParentId:  threadID,
-	}
-
-	_, err := a.client.PublishUserTyping(a.botUserID, typingRequest)
-	if err != nil {
+	if err := a.chat.SendTypingIndicator(channelID, threadID); err != nil {
 		log.Printf("[%s] WARNING: Failed to send typing indicator: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 	} else {
 		log.Printf("[%s] TYPING: Sent typing indicator for channel %s", time.Now().Format("2006-01-02 15:04:05"), channelID)
@@ -175,7 +165,7 @@ func (a *BotAgent) sendTypingIndicator(channelID, threadID string) {
 
 func (a *BotAgent) canCreateThread(postID string) bool {
 	// Verify the post exists before creating thread
-	if _, _, err := a.client.GetPost(postID, ""); err != nil {
+	if _, err := a.chat.GetMessage(postID); err != nil {
 		log.Printf("[%s] THREAD: Cannot create thread, post %s not accessible: %v", time.Now().Format("2006-01-02 15:04:05"), postID, err)
 		return false
 	}
@@ -190,7 +180,7 @@ func (a *BotAgent) getThreadContext(message types.PostedMessage) (string, error)
 	}
 
 	// Get all posts in the thread
-	threadPosts, _, err := a.client.GetPostThread(rootId, "", true)
+	posts, err := a.chat.GetThreadMessages(rootId)
 	if err != nil {
 		log.Printf("[%s] THREAD: Failed to get thread context: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 		return message.Message, nil // Fallback to just the current message
@@ -200,16 +190,10 @@ func (a *BotAgent) getThreadContext(message types.PostedMessage) (string, error)
 	var contextBuilder strings.Builder
 	contextBuilder.WriteString("Previous conversation context:\n\n")
 
-	// Sort posts by creation time
-	posts := make([]*model.Post, 0, len(threadPosts.Posts))
-	for _, p := range threadPosts.Posts {
-		posts = append(posts, p)
-	}
-
-	// Sort by CreateAt timestamp
+	// Sort posts by timestamp
 	for i := 0; i < len(posts); i++ {
 		for j := i + 1; j < len(posts); j++ {
-			if posts[i].CreateAt > posts[j].CreateAt {
+			if posts[i].Timestamp > posts[j].Timestamp {
 				posts[i], posts[j] = posts[j], posts[i]
 			}
 		}
@@ -217,26 +201,37 @@ func (a *BotAgent) getThreadContext(message types.PostedMessage) (string, error)
 
 	// Format each post with speaker identification
 	for _, p := range posts {
-		if p.Id == message.PostId {
+		if p.ID == message.PostId {
 			continue // Skip the current message, we'll add it separately
 		}
 
 		// Get user info for this post
-		user, _, err := a.client.GetUser(p.UserId, "")
+		user, err := a.chat.GetUser(p.UserID)
 		var speaker string
 		if err != nil {
 			speaker = "Unknown User"
-		} else if p.UserId == a.botUserID {
+		} else if p.UserID == a.botUserID {
 			speaker = "Assistant" // This is the bot
 		} else {
 			speaker = user.Username
 		}
 
-		contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", speaker, p.Message))
+		contextBuilder.WriteString(fmt.Sprintf("%s: %s\n", speaker, p.Content))
 	}
 
-	// Add current message
-	contextBuilder.WriteString(fmt.Sprintf("\nUser: %s", message.Message))
+	// Add current message with speaker info
+	if message.UserId != "" {
+		user, err := a.chat.GetUser(message.UserId)
+		var speaker string
+		if err != nil {
+			speaker = "User"
+		} else {
+			speaker = user.Username
+		}
+		contextBuilder.WriteString(fmt.Sprintf("\n%s: %s", speaker, message.Message))
+	} else {
+		contextBuilder.WriteString(fmt.Sprintf("\nUser: %s", message.Message))
+	}
 
 	result := contextBuilder.String()
 	log.Printf("[%s] THREAD: Built context with %d posts (%d chars)", time.Now().Format("2006-01-02 15:04:05"), len(posts), len(result))
@@ -258,7 +253,7 @@ func (a *BotAgent) cleanupStaleThreads() {
 		if count >= 5 { // Only check first 5 to avoid too many API calls
 			break
 		}
-		if _, _, err := a.client.GetPost(threadId, ""); err != nil {
+		if _, err := a.chat.GetMessage(threadId); err != nil {
 			staleThreads = append(staleThreads, threadId)
 		}
 		count++

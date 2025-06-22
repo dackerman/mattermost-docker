@@ -48,7 +48,7 @@ func NewBot(config Config, llmBackend llms.LLMBackend) *Bot {
 	// Create the agent with proper dependencies
 	llmAdapter := &LLMAdapter{backend: llmBackend}
 	chatAdapter := &ChatAdapter{bot: bot}
-	bot.agent = NewBotAgent(config.BotUserID, llmAdapter, chatAdapter, client)
+	bot.agent = NewBotAgent(config.BotUserID, llmAdapter, chatAdapter)
 
 	return bot
 }
@@ -75,6 +75,7 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	// Convert to PostedMessage and delegate to agent
 	message := types.PostedMessage{
 		PostId:    post.Id,
+		UserId:    post.UserId,
 		ThreadId:  post.RootId,
 		ChannelId: post.ChannelId,
 		Message:   post.Message,
@@ -233,6 +234,66 @@ func (c *ChatAdapter) PostMessage(message types.ChatMessage) error {
 	}
 
 	return nil
+}
+
+func (c *ChatAdapter) SendTypingIndicator(channelID, threadID string) error {
+	typingRequest := model.TypingRequest{
+		ChannelId: channelID,
+		ParentId:  threadID,
+	}
+	
+	_, err := c.bot.client.PublishUserTyping(c.bot.config.BotUserID, typingRequest)
+	return err
+}
+
+func (c *ChatAdapter) GetMessage(messageID string) (*types.Message, error) {
+	post, _, err := c.bot.client.GetPost(messageID, "")
+	if err != nil {
+		return nil, err
+	}
+	
+	return &types.Message{
+		ID:        post.Id,
+		UserID:    post.UserId,
+		ChannelID: post.ChannelId,
+		ThreadID:  post.RootId,
+		Content:   post.Message,
+		Timestamp: post.CreateAt,
+	}, nil
+}
+
+func (c *ChatAdapter) GetThreadMessages(threadID string) ([]*types.Message, error) {
+	threadPosts, _, err := c.bot.client.GetPostThread(threadID, "", true)
+	if err != nil {
+		return nil, err
+	}
+	
+	messages := make([]*types.Message, 0, len(threadPosts.Posts))
+	for _, post := range threadPosts.Posts {
+		messages = append(messages, &types.Message{
+			ID:        post.Id,
+			UserID:    post.UserId,
+			ChannelID: post.ChannelId,
+			ThreadID:  post.RootId,
+			Content:   post.Message,
+			Timestamp: post.CreateAt,
+		})
+	}
+	
+	return messages, nil
+}
+
+func (c *ChatAdapter) GetUser(userID string) (*types.User, error) {
+	user, _, err := c.bot.client.GetUser(userID, "")
+	if err != nil {
+		return nil, err
+	}
+	
+	return &types.User{
+		ID:       user.Id,
+		Username: user.Username,
+		IsBot:    user.IsBot,
+	}, nil
 }
 
 func main() {
