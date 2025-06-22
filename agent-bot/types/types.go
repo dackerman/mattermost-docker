@@ -50,8 +50,8 @@ type StreamChunk struct {
 
 // Chat provides generic chat platform operations
 type Chat interface {
-	// Send a message
-	PostMessage(message ChatMessage) error
+	// Send a message and return the message ID
+	PostMessage(message ChatMessage) (string, error)
 
 	// Update an existing message
 	UpdateMessage(messageID string, newContent string) error

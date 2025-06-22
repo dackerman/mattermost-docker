@@ -243,18 +243,19 @@ type ChatAdapter struct {
 	bot *Bot
 }
 
-func (c *ChatAdapter) PostMessage(message types.ChatMessage) error {
+func (c *ChatAdapter) PostMessage(message types.ChatMessage) (string, error) {
 	post := &model.Post{
 		ChannelId: message.ChannelId,
 		Message:   message.Message,
 		RootId:    message.ThreadId,
 	}
 
-	if _, _, err := c.bot.client.CreatePost(post); err != nil {
-		return fmt.Errorf("failed to post message: %v", err)
+	createdPost, _, err := c.bot.client.CreatePost(post)
+	if err != nil {
+		return "", fmt.Errorf("failed to post message: %v", err)
 	}
 
-	return nil
+	return createdPost.Id, nil
 }
 
 func (c *ChatAdapter) UpdateMessage(messageID string, newContent string) error {

@@ -216,31 +216,14 @@ func (a *BotAgent) respondWithStream(message types.PostedMessage, prompt string)
 		}
 	}
 
-	// Post initial message
-	if err := a.chat.PostMessage(initialMsg); err != nil {
+	// Post initial message and get its ID
+	messageID, err := a.chat.PostMessage(initialMsg)
+	if err != nil {
 		log.Printf("[%s] ERROR: Failed to post initial message: %v", timestamp, err)
 		return
 	}
 
-	// We need to get the message ID of the posted message
-	// For now, we'll use a simple approach and get the latest message in the channel
-	// This could be improved by having PostMessage return the message ID
-	var messageID string
-	time.Sleep(100 * time.Millisecond) // Small delay to ensure message is posted
-	
-	// Try to get recent messages to find our message ID
-	// This is a simplified approach - in a real implementation, PostMessage should return the ID
-	if threadMessages, err := a.chat.GetThreadMessages(initialMsg.ThreadId); err == nil && len(threadMessages) > 0 {
-		// Get the last message (should be ours)
-		messageID = threadMessages[len(threadMessages)-1].ID
-	} else {
-		// Fallback - we can't update without message ID
-		log.Printf("[%s] WARNING: Could not get message ID for updates, proceeding without streaming updates", timestamp)
-		a.respondWithFallback(message, prompt)
-		return
-	}
-
-	log.Printf("[%s] STREAM: Got message ID %s for updates", timestamp, messageID)
+	log.Printf("[%s] STREAM: Posted initial message with ID %s", timestamp, messageID)
 
 	// Start streaming and updating
 	a.processStream(ctx, chunkChan, messageID, timestamp)
@@ -357,10 +340,10 @@ func (a *BotAgent) respondWithFallback(message types.PostedMessage, prompt strin
 	}
 
 	// Send the response
-	if err := a.chat.PostMessage(chatMsg); err != nil {
+	if messageID, err := a.chat.PostMessage(chatMsg); err != nil {
 		log.Printf("[%s] ERROR: Failed to send message: %v", timestamp, err)
 	} else {
-		log.Printf("[%s] SUCCESS: Message sent successfully", timestamp)
+		log.Printf("[%s] SUCCESS: Message sent successfully with ID %s", timestamp, messageID)
 	}
 }
 
