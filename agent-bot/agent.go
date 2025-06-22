@@ -11,21 +11,25 @@ import (
 
 // BotAgent implements the Agent interface to handle incoming messages
 type BotAgent struct {
-	botUserID     string
-	llm           types.LLM
-	chat          types.Chat
-	activeThreads map[string]bool
-	lastCleanup   time.Time
+	botUserID      string
+	botUsername    string
+	botDisplayName string
+	llm            types.LLM
+	chat           types.Chat
+	activeThreads  map[string]bool
+	lastCleanup    time.Time
 }
 
 // NewBotAgent creates a new agent that handles messages
-func NewBotAgent(botUserID string, llm types.LLM, chat types.Chat) *BotAgent {
+func NewBotAgent(botUserID, botUsername, botDisplayName string, llm types.LLM, chat types.Chat) *BotAgent {
 	return &BotAgent{
-		botUserID:     botUserID,
-		llm:           llm,
-		chat:          chat,
-		activeThreads: make(map[string]bool),
-		lastCleanup:   time.Now(),
+		botUserID:      botUserID,
+		botUsername:    botUsername,
+		botDisplayName: botDisplayName,
+		llm:            llm,
+		chat:           chat,
+		activeThreads:  make(map[string]bool),
+		lastCleanup:    time.Now(),
 	}
 }
 
@@ -53,7 +57,8 @@ func (a *BotAgent) MessagePosted(message types.PostedMessage) {
 
 func (a *BotAgent) shouldRespond(message types.PostedMessage) bool {
 	// Check various conditions for responding
-	isMentioned := strings.Contains(message.Message, "@agent-bot") || strings.Contains(message.Message, a.botUserID)
+	mention := "@" + a.botUsername
+	isMentioned := strings.Contains(message.Message, mention) || strings.Contains(message.Message, a.botUserID)
 	isInActiveThread := a.activeThreads[message.ThreadId] && message.ThreadId != ""
 
 	shouldRespond := isMentioned || message.IsDM
@@ -67,7 +72,8 @@ func (a *BotAgent) shouldRespond(message types.PostedMessage) bool {
 }
 
 func (a *BotAgent) logResponseReason(message types.PostedMessage) {
-	isMentioned := strings.Contains(message.Message, "@agent-bot") || strings.Contains(message.Message, a.botUserID)
+	mention := "@" + a.botUsername
+	isMentioned := strings.Contains(message.Message, mention) || strings.Contains(message.Message, a.botUserID)
 	isInActiveThread := a.activeThreads[message.ThreadId] && message.ThreadId != ""
 
 	if isMentioned {
@@ -139,7 +145,7 @@ func (a *BotAgent) respondToMessage(message types.PostedMessage) {
 		chatMsg.ThreadId = message.ThreadId
 		a.activeThreads[message.ThreadId] = true
 		log.Printf("[%s] THREAD: Continuing in existing thread %s", time.Now().Format("2006-01-02 15:04:05"), message.ThreadId)
-	} else if strings.Contains(message.Message, "@agent-bot") || strings.Contains(message.Message, a.botUserID) {
+	} else if strings.Contains(message.Message, "@"+a.botUsername) || strings.Contains(message.Message, a.botUserID) {
 		// This is a new mention, create a thread
 		if a.canCreateThread(message.PostId) {
 			chatMsg.ThreadId = message.PostId
@@ -212,7 +218,7 @@ func (a *BotAgent) getThreadContext(message types.PostedMessage) (string, error)
 		if err != nil {
 			speaker = "Unknown User"
 		} else if p.UserID == a.botUserID {
-			speaker = "Assistant" // This is the bot
+			speaker = a.botDisplayName // This is the bot
 		} else {
 			speaker = user.Username
 		}

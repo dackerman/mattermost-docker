@@ -23,12 +23,14 @@ type LLMBackend interface {
 
 // AnthropicBackend implements LLMBackend using Anthropic's Claude
 type AnthropicBackend struct {
-	client      *anthropic.Client
-	model       string
-	asanaClient *asana.Client
+	client       *anthropic.Client
+	model        string
+	maxTokens    int
+	maxWebSearch int
+	asanaClient  *asana.Client
 }
 
-func NewAnthropicBackend(apiKey, asanaKey string) *AnthropicBackend {
+func NewAnthropicBackend(apiKey, asanaKey, model string, maxTokens, maxWebSearch int) *AnthropicBackend {
 	// Set API key as environment variable for the client
 	os.Setenv("ANTHROPIC_API_KEY", apiKey)
 	client := anthropic.NewClient()
@@ -37,9 +39,11 @@ func NewAnthropicBackend(apiKey, asanaKey string) *AnthropicBackend {
 	asanaClient := asana.NewClient(asanaKey, &http.Client{})
 	
 	return &AnthropicBackend{
-		client:      &client,
-		model:       "claude-sonnet-4-20250514", // Claude 4 Sonnet latest
-		asanaClient: asanaClient,
+		client:       &client,
+		model:        model,
+		maxTokens:    maxTokens,
+		maxWebSearch: maxWebSearch,
+		asanaClient:  asanaClient,
 	}
 }
 
@@ -48,14 +52,14 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	log.Printf("[%s] LLM: Starting Anthropic API call", timestamp)
 	log.Printf("[%s] LLM: Model: %s", timestamp, a.model)
 	log.Printf("[%s] LLM: Input prompt (%d chars): %s", timestamp, len(text), text)
-	log.Printf("[%s] LLM: Max tokens: 4096", timestamp)
-	log.Printf("[%s] LLM: Web search enabled (max 3 searches)", timestamp)
+	log.Printf("[%s] LLM: Max tokens: %d", timestamp, a.maxTokens)
+	log.Printf("[%s] LLM: Web search enabled (max %d searches)", timestamp, a.maxWebSearch)
 
 	// Build tools array
 	tools := []anthropic.ToolUnionParam{
 		{
 			OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
-				MaxUses: anthropic.Int(3), // Limit to 3 searches per request
+				MaxUses: anthropic.Int(int64(a.maxWebSearch)), // Configurable max searches per request
 			},
 		},
 	}
@@ -107,7 +111,7 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		
 		resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
 			Model:     anthropic.Model(a.model),
-			MaxTokens: 4096,
+			MaxTokens: int64(a.maxTokens),
 			Messages:  messages,
 			Tools:     tools,
 		})

@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,11 +19,16 @@ import (
 )
 
 type Config struct {
-	ServerURL    string
-	AccessToken  string
-	BotUserID    string
-	AnthropicKey string
-	AsanaKey     string
+	ServerURL      string
+	AccessToken    string
+	BotUserID      string
+	BotUsername    string
+	BotDisplayName string
+	AnthropicKey   string
+	AnthropicModel string
+	MaxTokens      int
+	MaxWebSearch   int
+	AsanaKey       string
 }
 
 type Bot struct {
@@ -49,7 +55,7 @@ func NewBot(config Config, llmBackend llms.LLMBackend) *Bot {
 	// Create the agent with proper dependencies
 	llmAdapter := &LLMAdapter{backend: llmBackend}
 	chatAdapter := &ChatAdapter{bot: bot}
-	bot.agent = NewBotAgent(config.BotUserID, llmAdapter, chatAdapter)
+	bot.agent = NewBotAgent(config.BotUserID, config.BotUsername, config.BotDisplayName, llmAdapter, chatAdapter)
 
 	return bot
 }
@@ -302,6 +308,24 @@ func (c *ChatAdapter) GetUser(userID string) (*types.User, error) {
 	}, nil
 }
 
+// getEnvWithDefault returns environment variable value or default if not set
+func getEnvWithDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
+}
+
+// getEnvIntWithDefault returns environment variable as int or default if not set
+func getEnvIntWithDefault(key string, defaultValue int) int {
+	if value := os.Getenv(key); value != "" {
+		if intValue, err := strconv.ParseInt(value, 10, 32); err == nil {
+			return int(intValue)
+		}
+	}
+	return defaultValue
+}
+
 func main() {
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
@@ -309,11 +333,16 @@ func main() {
 	}
 
 	config := Config{
-		ServerURL:    os.Getenv("MATTERMOST_SERVER_URL"),
-		AccessToken:  os.Getenv("MATTERMOST_ACCESS_TOKEN"),
-		BotUserID:    os.Getenv("MATTERMOST_BOT_USER_ID"),
-		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
-		AsanaKey:     os.Getenv("ASANA_API_KEY"),
+		ServerURL:      os.Getenv("MATTERMOST_SERVER_URL"),
+		AccessToken:    os.Getenv("MATTERMOST_ACCESS_TOKEN"),
+		BotUserID:      os.Getenv("MATTERMOST_BOT_USER_ID"),
+		BotUsername:    getEnvWithDefault("BOT_USERNAME", "agent-bot"),
+		BotDisplayName: getEnvWithDefault("BOT_DISPLAY_NAME", "Assistant"),
+		AnthropicKey:   os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicModel: getEnvWithDefault("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+		MaxTokens:      getEnvIntWithDefault("LLM_MAX_TOKENS", 4096),
+		MaxWebSearch:   getEnvIntWithDefault("WEB_SEARCH_MAX_USES", 3),
+		AsanaKey:       os.Getenv("ASANA_API_KEY"),
 	}
 
 	if config.ServerURL == "" || config.AccessToken == "" {
@@ -329,7 +358,7 @@ func main() {
 	}
 
 	// Initialize LLM backend
-	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey)
+	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey, config.AnthropicModel, config.MaxTokens, config.MaxWebSearch)
 
 	bot := NewBot(config, llmBackend)
 	bot.start()
