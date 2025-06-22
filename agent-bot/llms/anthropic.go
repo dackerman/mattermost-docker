@@ -27,10 +27,11 @@ type AnthropicBackend struct {
 	model        string
 	maxTokens    int
 	maxWebSearch int
+	enableTools  bool
 	asanaClient  *asana.Client
 }
 
-func NewAnthropicBackend(apiKey, asanaKey, model string, maxTokens, maxWebSearch int) *AnthropicBackend {
+func NewAnthropicBackend(apiKey, asanaKey, model string, maxTokens, maxWebSearch int, enableTools bool) *AnthropicBackend {
 	// Set API key as environment variable for the client
 	os.Setenv("ANTHROPIC_API_KEY", apiKey)
 	client := anthropic.NewClient()
@@ -43,6 +44,7 @@ func NewAnthropicBackend(apiKey, asanaKey, model string, maxTokens, maxWebSearch
 		model:        model,
 		maxTokens:    maxTokens,
 		maxWebSearch: maxWebSearch,
+		enableTools:  enableTools,
 		asanaClient:  asanaClient,
 	}
 }
@@ -53,50 +55,57 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	log.Printf("[%s] LLM: Model: %s", timestamp, a.model)
 	log.Printf("[%s] LLM: Input prompt (%d chars): %s", timestamp, len(text), text)
 	log.Printf("[%s] LLM: Max tokens: %d", timestamp, a.maxTokens)
-	log.Printf("[%s] LLM: Web search enabled (max %d searches)", timestamp, a.maxWebSearch)
-
-	// Build tools array
-	tools := []anthropic.ToolUnionParam{
-		{
-			OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
-				MaxUses: anthropic.Int(int64(a.maxWebSearch)), // Configurable max searches per request
-			},
-		},
+	if a.enableTools {
+		log.Printf("[%s] LLM: Web search enabled (max %d searches)", timestamp, a.maxWebSearch)
+	} else {
+		log.Printf("[%s] LLM: Tools disabled", timestamp)
 	}
 
-	// Add Asana tools
-	log.Printf("[%s] LLM: Adding Asana tools", timestamp)
-	asanaTools := []anthropic.ToolUnionParam{
-		{
-			OfTool: &anthropic.ToolParam{
-				Name:        "list_asana_projects",
-				Description: anthropic.String("List projects in an Asana workspace"),
-				InputSchema: ListProjectsInputSchema,
+	// Build tools array conditionally
+	var tools []anthropic.ToolUnionParam
+	if a.enableTools {
+		tools = []anthropic.ToolUnionParam{
+			{
+				OfWebSearchTool20250305: &anthropic.WebSearchTool20250305Param{
+					MaxUses: anthropic.Int(int64(a.maxWebSearch)), // Configurable max searches per request
+				},
 			},
-		},
-		{
-			OfTool: &anthropic.ToolParam{
-				Name:        "list_asana_project_tasks",
-				Description: anthropic.String("List incomplete tasks in an Asana project"),
-				InputSchema: ListProjectTasksInputSchema,
+		}
+
+		// Add Asana tools
+		log.Printf("[%s] LLM: Adding Asana tools", timestamp)
+		asanaTools := []anthropic.ToolUnionParam{
+			{
+				OfTool: &anthropic.ToolParam{
+					Name:        "list_asana_projects",
+					Description: anthropic.String("List projects in an Asana workspace"),
+					InputSchema: ListProjectsInputSchema,
+				},
 			},
-		},
-		{
-			OfTool: &anthropic.ToolParam{
-				Name:        "list_asana_user_tasks",
-				Description: anthropic.String("List incomplete tasks assigned to a user in Asana"),
-				InputSchema: ListUserTasksInputSchema,
+			{
+				OfTool: &anthropic.ToolParam{
+					Name:        "list_asana_project_tasks",
+					Description: anthropic.String("List incomplete tasks in an Asana project"),
+					InputSchema: ListProjectTasksInputSchema,
+				},
 			},
-		},
-		{
-			OfTool: &anthropic.ToolParam{
-				Name:        "list_asana_users",
-				Description: anthropic.String("List users in an Asana workspace to get their GIDs for other operations"),
-				InputSchema: ListUsersInputSchema,
+			{
+				OfTool: &anthropic.ToolParam{
+					Name:        "list_asana_user_tasks",
+					Description: anthropic.String("List incomplete tasks assigned to a user in Asana"),
+					InputSchema: ListUserTasksInputSchema,
+				},
 			},
-		},
+			{
+				OfTool: &anthropic.ToolParam{
+					Name:        "list_asana_users",
+					Description: anthropic.String("List users in an Asana workspace to get their GIDs for other operations"),
+					InputSchema: ListUsersInputSchema,
+				},
+			},
+		}
+		tools = append(tools, asanaTools...)
 	}
-	tools = append(tools, asanaTools...)
 
 	// Initialize conversation
 	messages := []anthropic.MessageParam{
@@ -109,12 +118,15 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	for {
 		startTime := time.Now()
 		
-		resp, err := a.client.Messages.New(ctx, anthropic.MessageNewParams{
+		params := anthropic.MessageNewParams{
 			Model:     anthropic.Model(a.model),
 			MaxTokens: int64(a.maxTokens),
 			Messages:  messages,
-			Tools:     tools,
-		})
+		}
+		if a.enableTools && len(tools) > 0 {
+			params.Tools = tools
+		}
+		resp, err := a.client.Messages.New(ctx, params)
 		
 		duration := time.Since(startTime)
 		

@@ -15,18 +15,20 @@ type BotAgent struct {
 	botUsername    string
 	botDisplayName string
 	llm            types.LLM
+	decisionLLM    types.LLM
 	chat           types.Chat
 	activeThreads  map[string]bool
 	lastCleanup    time.Time
 }
 
 // NewBotAgent creates a new agent that handles messages
-func NewBotAgent(botUserID, botUsername, botDisplayName string, llm types.LLM, chat types.Chat) *BotAgent {
+func NewBotAgent(botUserID, botUsername, botDisplayName string, llm types.LLM, decisionLLM types.LLM, chat types.Chat) *BotAgent {
 	return &BotAgent{
 		botUserID:      botUserID,
 		botUsername:    botUsername,
 		botDisplayName: botDisplayName,
 		llm:            llm,
+		decisionLLM:    decisionLLM,
 		chat:           chat,
 		activeThreads:  make(map[string]bool),
 		lastCleanup:    time.Now(),
@@ -56,19 +58,21 @@ func (a *BotAgent) MessagePosted(message types.PostedMessage) {
 }
 
 func (a *BotAgent) shouldRespond(message types.PostedMessage) bool {
-	// Check various conditions for responding
+	// Check for direct mentions and DMs first - always respond to these
 	mention := "@" + a.botUsername
 	isMentioned := strings.Contains(message.Message, mention) || strings.Contains(message.Message, a.botUserID)
-	isInActiveThread := a.activeThreads[message.ThreadId] && message.ThreadId != ""
-
-	shouldRespond := isMentioned || message.IsDM
-
-	// Also respond in active threads, but decide if we should based on content
-	if !shouldRespond && isInActiveThread {
-		shouldRespond = a.shouldRespondInThread(message)
+	
+	if isMentioned || message.IsDM {
+		return true
 	}
 
-	return shouldRespond
+	// For active threads, use LLM to decide if we should respond
+	isInActiveThread := a.activeThreads[message.ThreadId] && message.ThreadId != ""
+	if isInActiveThread {
+		return a.shouldRespondInThreadLLM(message)
+	}
+
+	return false
 }
 
 func (a *BotAgent) logResponseReason(message types.PostedMessage) {
@@ -85,7 +89,54 @@ func (a *BotAgent) logResponseReason(message types.PostedMessage) {
 	}
 }
 
-func (a *BotAgent) shouldRespondInThread(message types.PostedMessage) bool {
+// shouldRespondInThreadLLM uses a fast LLM to decide if we should respond in an active thread
+func (a *BotAgent) shouldRespondInThreadLLM(message types.PostedMessage) bool {
+	// Get recent thread context for decision making
+	context, err := a.getThreadContext(message)
+	if err != nil {
+		log.Printf("[%s] DECISION: Failed to get thread context, defaulting to simple heuristic: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		return a.shouldRespondInThreadFallback(message)
+	}
+
+	// Create a focused prompt for the decision LLM
+	decisionPrompt := fmt.Sprintf(`You are a chat bot assistant. Based on this conversation context, should you respond to the latest message?
+
+Context:
+%s
+
+Your bot username is "%s" and display name is "%s".
+
+Respond with ONLY "YES" if you should respond (if the message is:
+- A direct question to anyone
+- Asking for help or information
+- Continuing a conversation you're already part of
+- Requesting an action or task
+
+Respond with ONLY "NO" if you should not respond (if the message is:
+- Casual conversation between others
+- Off-topic chatter
+- Simple acknowledgments like "ok", "thanks", "lol"
+- Private conversation between specific people
+
+Answer:`, context, a.botUsername, a.botDisplayName)
+
+	// Use the fast decision LLM
+	response, err := a.decisionLLM.Prompt(decisionPrompt)
+	if err != nil {
+		log.Printf("[%s] DECISION: LLM call failed, using fallback: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		return a.shouldRespondInThreadFallback(message)
+	}
+
+	// Parse the response
+	response = strings.TrimSpace(strings.ToUpper(response))
+	shouldRespond := strings.Contains(response, "YES")
+	
+	log.Printf("[%s] DECISION: LLM response '%s' -> %v", time.Now().Format("2006-01-02 15:04:05"), response, shouldRespond)
+	return shouldRespond
+}
+
+// shouldRespondInThreadFallback is the original simple heuristic as a fallback
+func (a *BotAgent) shouldRespondInThreadFallback(message types.PostedMessage) bool {
 	// Simple heuristic: respond if the message seems to be asking a question or addressing the conversation
 	msg := strings.ToLower(message.Message)
 

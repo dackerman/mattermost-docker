@@ -19,43 +19,48 @@ import (
 )
 
 type Config struct {
-	ServerURL      string
-	AccessToken    string
-	BotUserID      string
-	BotUsername    string
-	BotDisplayName string
-	AnthropicKey   string
-	AnthropicModel string
-	MaxTokens      int
-	MaxWebSearch   int
-	AsanaKey       string
+	ServerURL         string
+	AccessToken       string
+	BotUserID         string
+	BotUsername       string
+	BotDisplayName    string
+	AnthropicKey      string
+	AnthropicModel    string
+	MaxTokens         int
+	MaxWebSearch      int
+	DecisionModel     string
+	DecisionMaxTokens int
+	AsanaKey          string
 }
 
 type Bot struct {
-	client          *model.Client4
-	config          Config
-	wsClient        *model.WebSocketClient
-	reconnectTicker *time.Ticker
-	stopChan        chan struct{}
-	llmBackend      llms.LLMBackend
-	agent           types.Agent
+	client             *model.Client4
+	config             Config
+	wsClient           *model.WebSocketClient
+	reconnectTicker    *time.Ticker
+	stopChan           chan struct{}
+	llmBackend         llms.LLMBackend
+	decisionLLMBackend llms.LLMBackend
+	agent              types.Agent
 }
 
-func NewBot(config Config, llmBackend llms.LLMBackend) *Bot {
+func NewBot(config Config, llmBackend, decisionLLMBackend llms.LLMBackend) *Bot {
 	client := model.NewAPIv4Client(config.ServerURL)
 	client.SetToken(config.AccessToken)
 
 	bot := &Bot{
-		client:     client,
-		config:     config,
-		stopChan:   make(chan struct{}),
-		llmBackend: llmBackend,
+		client:             client,
+		config:             config,
+		stopChan:           make(chan struct{}),
+		llmBackend:         llmBackend,
+		decisionLLMBackend: decisionLLMBackend,
 	}
 
 	// Create the agent with proper dependencies
 	llmAdapter := &LLMAdapter{backend: llmBackend}
+	decisionLLMAdapter := &LLMAdapter{backend: decisionLLMBackend}
 	chatAdapter := &ChatAdapter{bot: bot}
-	bot.agent = NewBotAgent(config.BotUserID, config.BotUsername, config.BotDisplayName, llmAdapter, chatAdapter)
+	bot.agent = NewBotAgent(config.BotUserID, config.BotUsername, config.BotDisplayName, llmAdapter, decisionLLMAdapter, chatAdapter)
 
 	return bot
 }
@@ -333,16 +338,18 @@ func main() {
 	}
 
 	config := Config{
-		ServerURL:      os.Getenv("MATTERMOST_SERVER_URL"),
-		AccessToken:    os.Getenv("MATTERMOST_ACCESS_TOKEN"),
-		BotUserID:      os.Getenv("MATTERMOST_BOT_USER_ID"),
-		BotUsername:    getEnvWithDefault("BOT_USERNAME", "agent-bot"),
-		BotDisplayName: getEnvWithDefault("BOT_DISPLAY_NAME", "Assistant"),
-		AnthropicKey:   os.Getenv("ANTHROPIC_API_KEY"),
-		AnthropicModel: getEnvWithDefault("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
-		MaxTokens:      getEnvIntWithDefault("LLM_MAX_TOKENS", 4096),
-		MaxWebSearch:   getEnvIntWithDefault("WEB_SEARCH_MAX_USES", 3),
-		AsanaKey:       os.Getenv("ASANA_API_KEY"),
+		ServerURL:         os.Getenv("MATTERMOST_SERVER_URL"),
+		AccessToken:       os.Getenv("MATTERMOST_ACCESS_TOKEN"),
+		BotUserID:         os.Getenv("MATTERMOST_BOT_USER_ID"),
+		BotUsername:       getEnvWithDefault("BOT_USERNAME", "agent-bot"),
+		BotDisplayName:    getEnvWithDefault("BOT_DISPLAY_NAME", "Assistant"),
+		AnthropicKey:      os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicModel:    getEnvWithDefault("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+		MaxTokens:         getEnvIntWithDefault("LLM_MAX_TOKENS", 4096),
+		MaxWebSearch:      getEnvIntWithDefault("WEB_SEARCH_MAX_USES", 3),
+		DecisionModel:     getEnvWithDefault("DECISION_MODEL", "claude-haiku-3.5-20241022"),
+		DecisionMaxTokens: getEnvIntWithDefault("DECISION_MAX_TOKENS", 512),
+		AsanaKey:          os.Getenv("ASANA_API_KEY"),
 	}
 
 	if config.ServerURL == "" || config.AccessToken == "" {
@@ -357,9 +364,10 @@ func main() {
 		log.Fatal("Missing required environment variable: ASANA_API_KEY")
 	}
 
-	// Initialize LLM backend
-	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey, config.AnthropicModel, config.MaxTokens, config.MaxWebSearch)
+	// Initialize LLM backends
+	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey, config.AnthropicModel, config.MaxTokens, config.MaxWebSearch, true) // Main LLM with tools
+	decisionLLMBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey, config.DecisionModel, config.DecisionMaxTokens, 0, false) // Decision LLM without tools
 
-	bot := NewBot(config, llmBackend)
+	bot := NewBot(config, llmBackend, decisionLLMBackend)
 	bot.start()
 }
