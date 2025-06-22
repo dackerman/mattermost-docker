@@ -73,14 +73,14 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 		{
 			OfTool: &anthropic.ToolParam{
 				Name:        "list_asana_project_tasks",
-				Description: anthropic.String("List tasks in an Asana project"),
+				Description: anthropic.String("List incomplete tasks in an Asana project"),
 				InputSchema: ListProjectTasksInputSchema,
 			},
 		},
 		{
 			OfTool: &anthropic.ToolParam{
 				Name:        "list_asana_user_tasks",
-				Description: anthropic.String("List tasks assigned to a user in Asana"),
+				Description: anthropic.String("List incomplete tasks assigned to a user in Asana"),
 				InputSchema: ListUserTasksInputSchema,
 			},
 		},

@@ -108,11 +108,11 @@ Claude has access to three Asana tools when ASANA_API_KEY is set:
 
 2. **list_asana_project_tasks**
    - Input: `project_gid` (required)
-   - Returns: List of tasks with GID, name, completed, notes
+   - Returns: List of incomplete tasks with GID, name, completed, notes
 
 3. **list_asana_user_tasks**
    - Input: `assignee_gid` (required), `workspace_gid` (optional)
-   - Returns: User's assigned tasks
+   - Returns: User's incomplete assigned tasks
 
 ## Common Tasks
 

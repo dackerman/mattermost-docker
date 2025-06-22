@@ -159,7 +159,7 @@ func (c *Client) ListProjects(workspaceGID string) ([]Project, error) {
 }
 
 func (c *Client) ListProjectTasks(projectGID string) ([]Task, error) {
-	path := fmt.Sprintf("/projects/%s/tasks", projectGID)
+	path := fmt.Sprintf("/projects/%s/tasks?completed_since=now", projectGID)
 	body, err := c.makeRequest("GET", path)
 	if err != nil {
 		return nil, err
@@ -192,7 +192,7 @@ func (c *Client) ListUserTasks(assigneeGID, workspaceGID string) ([]Task, error)
 		workspaceGID = defaultWorkspace
 	}
 
-	path := fmt.Sprintf("/tasks?assignee=%s&workspace=%s", assigneeGID, workspaceGID)
+	path := fmt.Sprintf("/tasks?assignee=%s&workspace=%s&completed_since=now", assigneeGID, workspaceGID)
 	body, err := c.makeRequest("GET", path)
 	if err != nil {
 		return nil, err
