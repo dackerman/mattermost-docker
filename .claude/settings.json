@@ -1,0 +1,48 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(ls:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(find:*)",
+      "Bash(grep:*)",
+      "Bash(make:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker exec:*)",
+      "Bash(npm run build:*)",
+      "WebFetch(domain:docs.mattermost.com)",
+      "WebFetch(domain:developers.mattermost.com)",
+      "Bash(go mod init:*)",
+      "Bash(go get:*)",
+      "Bash(go build:*)",
+      "Bash(ss:*)",
+      "Bash(mmctl team users add:*)",
+      "Bash(mmctl config get:*)",
+      "Bash(git add:*)",
+      "Bash(go doc:*)",
+      "WebFetch(domain:api.mattermost.com)",
+      "Bash(mmctl help:*)",
+      "Bash(mmctl post list:*)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(go mod list:*)",
+      "Bash(go list:*)",
+      "mcp__context7__resolve-library-id",
+      "WebFetch(domain:pkg.go.dev)",
+      "Bash(go test:*)",
+      "mcp__context7__get-library-docs",
+      "WebFetch(domain:developers.asana.com)",
+      "Bash(go mod:*)",
+      "Bash(pnpm run:*)"
+    ],
+    "deny": [
+      "Bash(docker compose down -v:*)",
+      "Bash(docker compose down --volumes:*)",
+      "Bash(docker-compose down -v:*)",
+      "Bash(docker-compose down --volumes:*)",
+      "Bash(docker system prune*--volumes:*)",
+      "Bash(docker volume rm:*)",
+      "Bash(docker volume prune:*)",
+      "Bash(docker container prune*--volumes:*)"
+    ]
+  }
+}
