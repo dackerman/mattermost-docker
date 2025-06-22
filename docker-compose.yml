@@ -53,6 +53,24 @@ services:
     networks:
       - mattermost-network
 
+  agent-bot:
+    build: ./agent-bot
+    container_name: mattermost-agent-bot
+    restart: unless-stopped
+    depends_on:
+      - mattermost
+    environment:
+      MATTERMOST_SERVER_URL: http://mattermost:8065
+      MATTERMOST_ACCESS_TOKEN: ${MATTERMOST_ACCESS_TOKEN}
+      MATTERMOST_BOT_USER_ID: ${MATTERMOST_BOT_USER_ID}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      PORT: 8081
+      ASANA_API_KEY: ${ASANA_API_KEY}
+    ports:
+      - "8081:8081"
+    networks:
+      - mattermost-network
+
 networks:
   mattermost-network:
     driver: bridge
