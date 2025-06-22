@@ -1,5 +1,7 @@
 package types
 
+import "context"
+
 // Message represents a generic chat message
 type Message struct {
 	ID        string
@@ -39,10 +41,20 @@ type ChatMessage struct {
 	Message   string
 }
 
+// StreamChunk represents a piece of streaming response
+type StreamChunk struct {
+	Content string
+	Done    bool
+	Error   error
+}
+
 // Chat provides generic chat platform operations
 type Chat interface {
 	// Send a message
 	PostMessage(message ChatMessage) error
+
+	// Update an existing message
+	UpdateMessage(messageID string, newContent string) error
 
 	// Send typing indicator
 	SendTypingIndicator(channelID, threadID string) error
@@ -59,5 +71,9 @@ type Chat interface {
 
 // LLM provides language model operations
 type LLM interface {
+	// Synchronous prompt
 	Prompt(message string) (string, error)
+
+	// Streaming prompt - returns a channel of chunks
+	PromptStream(ctx context.Context, message string) (<-chan StreamChunk, error)
 }

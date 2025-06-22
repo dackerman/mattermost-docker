@@ -234,6 +234,10 @@ func (l *LLMAdapter) Prompt(message string) (string, error) {
 	return l.backend.Prompt(context.Background(), message)
 }
 
+func (l *LLMAdapter) PromptStream(ctx context.Context, message string) (<-chan types.StreamChunk, error) {
+	return l.backend.PromptStream(ctx, message)
+}
+
 // ChatAdapter adapts Bot to types.Chat interface
 type ChatAdapter struct {
 	bot *Bot
@@ -248,6 +252,24 @@ func (c *ChatAdapter) PostMessage(message types.ChatMessage) error {
 
 	if _, _, err := c.bot.client.CreatePost(post); err != nil {
 		return fmt.Errorf("failed to post message: %v", err)
+	}
+
+	return nil
+}
+
+func (c *ChatAdapter) UpdateMessage(messageID string, newContent string) error {
+	// Get the existing post
+	post, _, err := c.bot.client.GetPost(messageID, "")
+	if err != nil {
+		return fmt.Errorf("failed to get post for update: %v", err)
+	}
+
+	// Update the message content
+	post.Message = newContent
+
+	// Update the post
+	if _, _, err := c.bot.client.UpdatePost(messageID, post); err != nil {
+		return fmt.Errorf("failed to update message: %v", err)
 	}
 
 	return nil

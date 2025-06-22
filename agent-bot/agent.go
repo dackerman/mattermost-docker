@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -172,15 +173,165 @@ func (a *BotAgent) respondToMessage(message types.PostedMessage) {
 		prompt = message.Message // Fallback to just the current message
 	}
 
+	// Use streaming response
+	a.respondWithStream(message, prompt)
+}
+
+// respondWithStream handles streaming LLM responses with periodic message updates
+func (a *BotAgent) respondWithStream(message types.PostedMessage, prompt string) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	log.Printf("[%s] STREAM: Starting streaming response", timestamp)
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	// Start the streaming request
+	chunkChan, err := a.llm.PromptStream(ctx, prompt)
+	if err != nil {
+		log.Printf("[%s] ERROR: Failed to start streaming: %v", timestamp, err)
+		// Fallback to non-streaming response
+		a.respondWithFallback(message, prompt)
+		return
+	}
+
+	// Create initial empty message
+	initialMsg := types.ChatMessage{
+		ChannelId: message.ChannelId,
+		Message:   "_Thinking..._", // Markdown italic placeholder
+	}
+
+	// Handle thread creation and continuation
+	if message.ThreadId != "" {
+		// This is already part of a thread, continue in it
+		initialMsg.ThreadId = message.ThreadId
+		a.activeThreads[message.ThreadId] = true
+		log.Printf("[%s] THREAD: Continuing in existing thread %s", timestamp, message.ThreadId)
+	} else if strings.Contains(message.Message, "@"+a.botUsername) || strings.Contains(message.Message, a.botUserID) {
+		// This is a new mention, create a thread
+		if a.canCreateThread(message.PostId) {
+			initialMsg.ThreadId = message.PostId
+			a.activeThreads[message.PostId] = true
+			log.Printf("[%s] THREAD: Created thread for post %s", timestamp, message.PostId)
+		}
+	}
+
+	// Post initial message
+	if err := a.chat.PostMessage(initialMsg); err != nil {
+		log.Printf("[%s] ERROR: Failed to post initial message: %v", timestamp, err)
+		return
+	}
+
+	// We need to get the message ID of the posted message
+	// For now, we'll use a simple approach and get the latest message in the channel
+	// This could be improved by having PostMessage return the message ID
+	var messageID string
+	time.Sleep(100 * time.Millisecond) // Small delay to ensure message is posted
+	
+	// Try to get recent messages to find our message ID
+	// This is a simplified approach - in a real implementation, PostMessage should return the ID
+	if threadMessages, err := a.chat.GetThreadMessages(initialMsg.ThreadId); err == nil && len(threadMessages) > 0 {
+		// Get the last message (should be ours)
+		messageID = threadMessages[len(threadMessages)-1].ID
+	} else {
+		// Fallback - we can't update without message ID
+		log.Printf("[%s] WARNING: Could not get message ID for updates, proceeding without streaming updates", timestamp)
+		a.respondWithFallback(message, prompt)
+		return
+	}
+
+	log.Printf("[%s] STREAM: Got message ID %s for updates", timestamp, messageID)
+
+	// Start streaming and updating
+	a.processStream(ctx, chunkChan, messageID, timestamp)
+}
+
+// processStream handles the streaming response and periodic updates
+func (a *BotAgent) processStream(ctx context.Context, chunkChan <-chan types.StreamChunk, messageID string, timestamp string) {
+	var responseBuffer strings.Builder
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	lastUpdate := time.Now()
+	updateInterval := 1 * time.Second
+
+	log.Printf("[%s] STREAM: Starting to process chunks", timestamp)
+
+	for {
+		select {
+		case chunk, ok := <-chunkChan:
+			if !ok {
+				// Channel closed, stream ended
+				log.Printf("[%s] STREAM: Channel closed, finalizing", timestamp)
+				a.finalizeStreamResponse(messageID, responseBuffer.String(), timestamp)
+				return
+			}
+
+			if chunk.Error != nil {
+				log.Printf("[%s] STREAM: Error received: %v", timestamp, chunk.Error)
+				a.finalizeStreamResponse(messageID, responseBuffer.String()+"\n\n_Error: Failed to complete response_", timestamp)
+				return
+			}
+
+			if chunk.Done {
+				log.Printf("[%s] STREAM: Received completion signal", timestamp)
+				a.finalizeStreamResponse(messageID, responseBuffer.String(), timestamp)
+				return
+			}
+
+			// Append new content
+			if chunk.Content != "" {
+				responseBuffer.WriteString(chunk.Content)
+				log.Printf("[%s] STREAM: Added chunk (%d chars), total: %d chars", timestamp, len(chunk.Content), responseBuffer.Len())
+			}
+
+		case <-ticker.C:
+			// Periodic update
+			if time.Since(lastUpdate) >= updateInterval && responseBuffer.Len() > 0 {
+				currentResponse := responseBuffer.String()
+				if err := a.chat.UpdateMessage(messageID, currentResponse); err != nil {
+					log.Printf("[%s] STREAM: Failed to update message: %v", timestamp, err)
+				} else {
+					log.Printf("[%s] STREAM: Updated message (%d chars)", timestamp, len(currentResponse))
+					lastUpdate = time.Now()
+				}
+			}
+
+		case <-ctx.Done():
+			log.Printf("[%s] STREAM: Context cancelled", timestamp)
+			a.finalizeStreamResponse(messageID, responseBuffer.String()+"\n\n_Response cancelled_", timestamp)
+			return
+		}
+	}
+}
+
+// finalizeStreamResponse sends the final update and logs completion
+func (a *BotAgent) finalizeStreamResponse(messageID string, finalContent string, timestamp string) {
+	if finalContent == "" {
+		finalContent = "_No response generated_"
+	}
+
+	if err := a.chat.UpdateMessage(messageID, finalContent); err != nil {
+		log.Printf("[%s] STREAM: Failed to finalize message: %v", timestamp, err)
+	} else {
+		log.Printf("[%s] STREAM: Response completed (%d chars total)", timestamp, len(finalContent))
+	}
+}
+
+// respondWithFallback uses the original non-streaming approach
+func (a *BotAgent) respondWithFallback(message types.PostedMessage, prompt string) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	log.Printf("[%s] FALLBACK: Using non-streaming response", timestamp)
+
 	// Get LLM response with full context
 	response, err := a.llm.Prompt(prompt)
 	if err != nil {
-		log.Printf("[%s] ERROR: LLM request failed: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		log.Printf("[%s] ERROR: LLM request failed: %v", timestamp, err)
 		response = "I'm sorry, I'm having trouble processing your request right now. Please try again later."
 	}
 
-	log.Printf("[%s] OUTGOING: Sending response to channel %s: %s",
-		time.Now().Format("2006-01-02 15:04:05"),
+	log.Printf("[%s] OUTGOING: Sending fallback response to channel %s: %s",
+		timestamp,
 		message.ChannelId,
 		response[:min(100, len(response))]+"...")
 
@@ -195,21 +346,21 @@ func (a *BotAgent) respondToMessage(message types.PostedMessage) {
 		// This is already part of a thread, continue in it
 		chatMsg.ThreadId = message.ThreadId
 		a.activeThreads[message.ThreadId] = true
-		log.Printf("[%s] THREAD: Continuing in existing thread %s", time.Now().Format("2006-01-02 15:04:05"), message.ThreadId)
+		log.Printf("[%s] THREAD: Continuing in existing thread %s", timestamp, message.ThreadId)
 	} else if strings.Contains(message.Message, "@"+a.botUsername) || strings.Contains(message.Message, a.botUserID) {
 		// This is a new mention, create a thread
 		if a.canCreateThread(message.PostId) {
 			chatMsg.ThreadId = message.PostId
 			a.activeThreads[message.PostId] = true
-			log.Printf("[%s] THREAD: Created thread for post %s", time.Now().Format("2006-01-02 15:04:05"), message.PostId)
+			log.Printf("[%s] THREAD: Created thread for post %s", timestamp, message.PostId)
 		}
 	}
 
 	// Send the response
 	if err := a.chat.PostMessage(chatMsg); err != nil {
-		log.Printf("[%s] ERROR: Failed to send message: %v", time.Now().Format("2006-01-02 15:04:05"), err)
+		log.Printf("[%s] ERROR: Failed to send message: %v", timestamp, err)
 	} else {
-		log.Printf("[%s] SUCCESS: Message sent successfully", time.Now().Format("2006-01-02 15:04:05"))
+		log.Printf("[%s] SUCCESS: Message sent successfully", timestamp)
 	}
 }
 

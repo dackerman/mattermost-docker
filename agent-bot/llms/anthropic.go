@@ -14,11 +14,13 @@ import (
 	"github.com/invopop/jsonschema"
 
 	"agent-bot/asana"
+	"agent-bot/types"
 )
 
 // LLMBackend interface for pluggable LLM providers
 type LLMBackend interface {
 	Prompt(ctx context.Context, text string) (string, error)
+	PromptStream(ctx context.Context, text string) (<-chan types.StreamChunk, error)
 }
 
 // AnthropicBackend implements LLMBackend using Anthropic's Claude
@@ -258,6 +260,100 @@ func (a *AnthropicBackend) Prompt(ctx context.Context, text string) (string, err
 	}
 	
 	return result, nil
+}
+
+// PromptStream provides streaming responses from the LLM
+// For now, this simulates streaming by chunking the regular API response
+// TODO: Implement true streaming when the SDK documentation is clarified
+func (a *AnthropicBackend) PromptStream(ctx context.Context, text string) (<-chan types.StreamChunk, error) {
+	timestamp := time.Now().Format("2006-01-02 15:04:05")
+	log.Printf("[%s] LLM_STREAM: Starting simulated streaming response", timestamp)
+	log.Printf("[%s] LLM_STREAM: Model: %s", timestamp, a.model)
+	log.Printf("[%s] LLM_STREAM: Input prompt (%d chars): %s", timestamp, len(text), text)
+	log.Printf("[%s] LLM_STREAM: Max tokens: %d", timestamp, a.maxTokens)
+	
+	// For now, we'll simulate streaming by using the regular API and chunking the response
+	// This provides the streaming user experience while we work on true streaming integration
+	log.Printf("[%s] LLM_STREAM: Using simulated streaming (chunked response)", timestamp)
+
+	// Create output channel
+	chunkChan := make(chan types.StreamChunk, 10) // Buffered channel
+
+	// Start simulated streaming in a goroutine
+	go func() {
+		defer close(chunkChan)
+
+		startTime := time.Now()
+		
+		// Get the full response using the regular API
+		response, err := a.Prompt(ctx, text)
+		if err != nil {
+			log.Printf("[%s] LLM_STREAM: API call failed: %v", timestamp, err)
+			select {
+			case chunkChan <- types.StreamChunk{
+				Content: "",
+				Done:    true,
+				Error:   fmt.Errorf("API error: %v", err),
+			}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		duration := time.Since(startTime)
+		log.Printf("[%s] LLM_STREAM: Got response (%d chars) in %v, now chunking", timestamp, len(response), duration)
+
+		// Simulate streaming by sending chunks of the response
+		chunkSize := 10 // Characters per chunk
+		chunkDelay := 50 * time.Millisecond // Delay between chunks
+
+		for i := 0; i < len(response); i += chunkSize {
+			select {
+			case <-ctx.Done():
+				log.Printf("[%s] LLM_STREAM: Context cancelled during chunking", timestamp)
+				return
+			default:
+			}
+
+			end := i + chunkSize
+			if end > len(response) {
+				end = len(response)
+			}
+
+			chunk := response[i:end]
+			
+			// Send chunk
+			select {
+			case chunkChan <- types.StreamChunk{
+				Content: chunk,
+				Done:    false,
+				Error:   nil,
+			}:
+			case <-ctx.Done():
+				log.Printf("[%s] LLM_STREAM: Context cancelled while sending chunk", timestamp)
+				return
+			}
+
+			// Add delay between chunks for realistic streaming effect
+			if i+chunkSize < len(response) {
+				time.Sleep(chunkDelay)
+			}
+		}
+
+		// Send completion signal
+		log.Printf("[%s] LLM_STREAM: Finished streaming %d chars", timestamp, len(response))
+		select {
+		case chunkChan <- types.StreamChunk{
+			Content: "",
+			Done:    true,
+			Error:   nil,
+		}:
+		case <-ctx.Done():
+			return
+		}
+	}()
+
+	return chunkChan, nil
 }
 
 // GenerateSchema creates a schema for tool input validation
