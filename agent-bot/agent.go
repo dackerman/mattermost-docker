@@ -55,9 +55,8 @@ func (a *BotAgent) shouldRespond(message types.PostedMessage) bool {
 	// Check various conditions for responding
 	isMentioned := strings.Contains(message.Message, "@agent-bot") || strings.Contains(message.Message, a.botUserID)
 	isInActiveThread := a.activeThreads[message.ThreadId] && message.ThreadId != ""
-	isDM := false // We'll need to determine this from channel type in the future
 
-	shouldRespond := isMentioned || isDM
+	shouldRespond := isMentioned || message.IsDM
 
 	// Also respond in active threads, but decide if we should based on content
 	if !shouldRespond && isInActiveThread {
@@ -73,6 +72,8 @@ func (a *BotAgent) logResponseReason(message types.PostedMessage) {
 
 	if isMentioned {
 		log.Printf("[%s] MENTION: Bot mentioned, preparing response", time.Now().Format("2006-01-02 15:04:05"))
+	} else if message.IsDM {
+		log.Printf("[%s] DM: Direct message received, preparing response", time.Now().Format("2006-01-02 15:04:05"))
 	} else if isInActiveThread {
 		log.Printf("[%s] THREAD: Responding in active thread", time.Now().Format("2006-01-02 15:04:05"))
 	}

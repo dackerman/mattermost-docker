@@ -24,6 +24,7 @@ type PostedMessage struct {
 	ThreadId  string
 	ChannelId string
 	Message   string
+	IsDM      bool
 }
 
 // Agent handles incoming messages

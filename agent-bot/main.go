@@ -73,6 +73,10 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 		return
 	}
 
+	// Extract channel type from event data
+	channelType, _ := event.GetData()["channel_type"].(string)
+	isDM := channelType == "D"
+
 	// Convert to PostedMessage and delegate to agent
 	message := types.PostedMessage{
 		PostId:    post.Id,
@@ -80,6 +84,7 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 		ThreadId:  post.RootId,
 		ChannelId: post.ChannelId,
 		Message:   post.Message,
+		IsDM:      isDM,
 	}
 
 	b.agent.MessagePosted(message)
