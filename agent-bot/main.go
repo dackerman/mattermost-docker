@@ -22,6 +22,7 @@ type Config struct {
 	AccessToken  string
 	BotUserID    string
 	AnthropicKey string
+	AsanaKey     string
 }
 
 type Bot struct {
@@ -307,6 +308,7 @@ func main() {
 		AccessToken:  os.Getenv("MATTERMOST_ACCESS_TOKEN"),
 		BotUserID:    os.Getenv("MATTERMOST_BOT_USER_ID"),
 		AnthropicKey: os.Getenv("ANTHROPIC_API_KEY"),
+		AsanaKey:     os.Getenv("ASANA_API_KEY"),
 	}
 
 	if config.ServerURL == "" || config.AccessToken == "" {
@@ -317,8 +319,12 @@ func main() {
 		log.Fatal("Missing required environment variable: ANTHROPIC_API_KEY")
 	}
 
+	if config.AsanaKey == "" {
+		log.Fatal("Missing required environment variable: ASANA_API_KEY")
+	}
+
 	// Initialize LLM backend
-	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey)
+	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey, config.AsanaKey)
 
 	bot := NewBot(config, llmBackend)
 	bot.start()
