@@ -12,17 +12,17 @@ import (
 
 	"agent-bot/llms"
 	"agent-bot/types"
+
 	"github.com/joho/godotenv"
 	"github.com/mattermost/mattermost-server/v6/model"
 )
 
 type Config struct {
-	ServerURL     string
-	AccessToken   string
-	BotUserID     string
-	AnthropicKey  string
+	ServerURL    string
+	AccessToken  string
+	BotUserID    string
+	AnthropicKey string
 }
-
 
 type Bot struct {
 	client          *model.Client4
@@ -37,55 +37,21 @@ type Bot struct {
 func NewBot(config Config, llmBackend llms.LLMBackend) *Bot {
 	client := model.NewAPIv4Client(config.ServerURL)
 	client.SetToken(config.AccessToken)
-	
+
 	bot := &Bot{
 		client:     client,
 		config:     config,
 		stopChan:   make(chan struct{}),
 		llmBackend: llmBackend,
 	}
-	
+
 	// Create the agent with proper dependencies
 	llmAdapter := &LLMAdapter{backend: llmBackend}
 	chatAdapter := &ChatAdapter{bot: bot}
 	bot.agent = NewBotAgent(config.BotUserID, llmAdapter, chatAdapter, client)
-	
+
 	return bot
 }
-
-func (b *Bot) handleWebhook(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-
-	var post model.Post
-	if err := json.NewDecoder(r.Body).Decode(&post); err != nil {
-		http.Error(w, "Invalid JSON", http.StatusBadRequest)
-		return
-	}
-
-	// Don't respond to our own messages
-	if post.UserId == b.config.BotUserID {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	// Only respond to mentions
-	if strings.Contains(post.Message, "@"+b.config.BotUserID) {
-		// Convert to PostedMessage and delegate to agent
-		message := types.PostedMessage{
-			PostId:    post.Id,
-			ThreadId:  post.RootId,
-			ChannelId: post.ChannelId,
-			Message:   post.Message,
-		}
-		b.agent.MessagePosted(message)
-	}
-
-	w.WriteHeader(http.StatusOK)
-}
-
 
 func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	// Parse post data from event
@@ -93,19 +59,19 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 	if !ok {
 		return
 	}
-	
+
 	var post model.Post
 	if err := json.Unmarshal([]byte(postData), &post); err != nil {
 		log.Printf("[%s] ERROR: Failed to parse post: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 		return
 	}
-	
+
 	// Don't respond to our own messages
 	if post.UserId == b.config.BotUserID {
 		log.Printf("[%s] SKIP: Ignoring own message", time.Now().Format("2006-01-02 15:04:05"))
 		return
 	}
-	
+
 	// Convert to PostedMessage and delegate to agent
 	message := types.PostedMessage{
 		PostId:    post.Id,
@@ -113,10 +79,9 @@ func (b *Bot) handleWebSocketEvent(event *model.WebSocketEvent) {
 		ChannelId: post.ChannelId,
 		Message:   post.Message,
 	}
-	
+
 	b.agent.MessagePosted(message)
 }
-
 
 func min(a, b int) int {
 	if a < b {
@@ -128,16 +93,16 @@ func min(a, b int) int {
 func (b *Bot) connectWebSocket() error {
 	wsURL := strings.Replace(b.config.ServerURL, "http://", "ws://", 1)
 	log.Printf("[%s] WEBSOCKET: Connecting to %s", time.Now().Format("2006-01-02 15:04:05"), wsURL)
-	
+
 	wsClient, err := model.NewWebSocketClient4(wsURL, b.client.AuthToken)
 	if err != nil {
 		return fmt.Errorf("failed to create WebSocket client: %v", err)
 	}
-	
+
 	wsClient.Listen()
 	b.wsClient = wsClient
 	log.Printf("[%s] WEBSOCKET: Connection established, listening for events", time.Now().Format("2006-01-02 15:04:05"))
-	
+
 	return nil
 }
 
@@ -147,14 +112,14 @@ func (b *Bot) isWebSocketConnected() bool {
 
 func (b *Bot) handleWebSocketReconnection() {
 	b.reconnectTicker = time.NewTicker(10 * time.Second)
-	
+
 	go func() {
 		for {
 			select {
 			case <-b.reconnectTicker.C:
 				if !b.isWebSocketConnected() {
 					log.Printf("[%s] WEBSOCKET: Connection lost, attempting to reconnect...", time.Now().Format("2006-01-02 15:04:05"))
-					
+
 					if err := b.connectWebSocket(); err != nil {
 						log.Printf("[%s] WEBSOCKET: Reconnection failed: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 					} else {
@@ -178,12 +143,12 @@ func (b *Bot) startEventListener() {
 				b.wsClient = nil
 			}
 		}()
-		
+
 		if b.wsClient == nil || b.wsClient.EventChannel == nil {
 			log.Printf("[%s] WEBSOCKET: No WebSocket client or event channel", time.Now().Format("2006-01-02 15:04:05"))
 			return
 		}
-		
+
 		for {
 			select {
 			case event, ok := <-b.wsClient.EventChannel:
@@ -192,7 +157,7 @@ func (b *Bot) startEventListener() {
 					b.wsClient = nil
 					return
 				}
-				
+
 				if event.EventType() == model.WebsocketEventPosted {
 					log.Printf("[%s] EVENT: Received post event", time.Now().Format("2006-01-02 15:04:05"))
 					b.handleWebSocketEvent(event)
@@ -210,18 +175,18 @@ func (b *Bot) start() {
 	log.Printf("[%s] STARTUP: Starting agent bot...", time.Now().Format("2006-01-02 15:04:05"))
 	log.Printf("[%s] CONFIG: Server URL: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.ServerURL)
 	log.Printf("[%s] CONFIG: Bot User ID: %s", time.Now().Format("2006-01-02 15:04:05"), b.config.BotUserID)
-	
+
 	// Initial WebSocket connection
 	if err := b.connectWebSocket(); err != nil {
 		log.Fatalf("[%s] FATAL: Failed to connect to WebSocket: %v", time.Now().Format("2006-01-02 15:04:05"), err)
 	}
-	
+
 	// Start event listener
 	b.startEventListener()
-	
+
 	// Start reconnection handler
 	b.handleWebSocketReconnection()
-	
+
 	// Keep HTTP server for health checks
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("[%s] HEALTH: Health check requested", time.Now().Format("2006-01-02 15:04:05"))
@@ -232,12 +197,12 @@ func (b *Bot) start() {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(status))
 	})
-	
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
 	}
-	
+
 	log.Printf("[%s] SERVER: Bot listening on port %s (WebSocket connected)", time.Now().Format("2006-01-02 15:04:05"), port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
@@ -262,11 +227,11 @@ func (c *ChatAdapter) PostMessage(message types.ChatMessage) error {
 		Message:   message.Message,
 		RootId:    message.ThreadId,
 	}
-	
+
 	if _, _, err := c.bot.client.CreatePost(post); err != nil {
 		return fmt.Errorf("failed to post message: %v", err)
 	}
-	
+
 	return nil
 }
 
@@ -286,14 +251,14 @@ func main() {
 	if config.ServerURL == "" || config.AccessToken == "" {
 		log.Fatal("Missing required environment variables: MATTERMOST_SERVER_URL, MATTERMOST_ACCESS_TOKEN")
 	}
-	
+
 	if config.AnthropicKey == "" {
 		log.Fatal("Missing required environment variable: ANTHROPIC_API_KEY")
 	}
 
 	// Initialize LLM backend
 	llmBackend := llms.NewAnthropicBackend(config.AnthropicKey)
-	
+
 	bot := NewBot(config, llmBackend)
 	bot.start()
 }
